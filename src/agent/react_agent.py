@@ -1,0 +1,526 @@
+"""Agente ReAct com LangChain para orquestração das ferramentas de previsão Bitcoin.
+
+Ferramentas disponíveis:
+  - PrevisaoBitcoinTool  : executa o pipeline de inferência LSTM e retorna a previsão.
+  - CotacaoAtualTool     : consulta a cotação atual do BTC via yfinance / Binance.
+  - CryptoRAGTool        : busca simulada de contexto financeiro / notícias relevantes.
+
+Uso:
+    from src.agent.react_agent import build_agent
+    executor = build_agent(ml_artifacts)
+    result   = executor.invoke({"input": "Qual a previsão do BTC para a próxima hora?"})
+    print(result["output"])
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import requests
+import yfinance as yf
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain.prompts import PromptTemplate
+from langchain.tools import tool
+from langchain_openai import ChatOpenAI
+from zoneinfo import ZoneInfo
+
+logger = logging.getLogger("stockcast.agent")
+
+# ---------------------------------------------------------------------------
+# Constantes (espelham app.py para manter consistência)
+# ---------------------------------------------------------------------------
+LOOKBACK = 60
+SUPPORTED_TICKER = "BTC-USD"
+BRASILIA_TZ = "America/Sao_Paulo"
+BINANCE_SYMBOL = "BTCUSDT"
+BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_TIMEOUT_SECONDS = 10
+YFINANCE_TIMEOUT_SECONDS = 10
+YFINANCE_MAX_RETRIES = 2
+
+# ---------------------------------------------------------------------------
+# Indicadores técnicos (replicados de app.py para inferência independente)
+# ---------------------------------------------------------------------------
+
+def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return (100 - (100 / (1 + rs))).fillna(50.0)
+
+
+def _compute_macd_signal(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.Series:
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    return ((macd_line - signal_line) / series.replace(0, np.nan)).fillna(0.0)
+
+
+def _compute_bollinger_pct_b(series: pd.Series, period: int = 20, num_std: float = 2.0) -> pd.Series:
+    sma = series.rolling(window=period).mean()
+    std = series.rolling(window=period).std()
+    upper = sma + num_std * std
+    lower = sma - num_std * std
+    band_width = (upper - lower).replace(0, np.nan)
+    return ((series - lower) / band_width).fillna(0.5).clip(0.0, 1.0)
+
+
+def _compute_sma_ratio(series: pd.Series, short: int = 7, long: int = 21) -> pd.Series:
+    sma_short = series.rolling(window=short).mean()
+    sma_long = series.rolling(window=long).mean()
+    return ((sma_short / sma_long.replace(0, np.nan)) - 1.0).fillna(0.0)
+
+
+def _compute_volume_ratio(volume: pd.Series, period: int = 24) -> pd.Series:
+    vol_sma = volume.rolling(window=period).mean()
+    return (volume / vol_sma.replace(0, np.nan)).fillna(1.0).clip(0.0, 10.0)
+
+
+def _remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
+    if len(series) < 2:
+        return series
+    last_ts = pd.Timestamp(series.index[-1])
+    now_utc = pd.Timestamp.utcnow()
+    now_ref = now_utc.tz_localize(None) if last_ts.tzinfo is None else now_utc.tz_convert(last_ts.tz)
+    if last_ts >= now_ref.floor("h"):
+        return series.iloc[:-1]
+    return series
+
+
+def _ts_to_utc_iso(ts: pd.Timestamp) -> str:
+    ts = pd.Timestamp(ts)
+    ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+    return ts_utc.isoformat()
+
+
+def _ts_to_brt_iso(ts: pd.Timestamp) -> str:
+    ts = pd.Timestamp(ts)
+    ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+    return ts_utc.tz_convert(ZoneInfo(BRASILIA_TZ)).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Download de dados de mercado (yfinance → Binance fallback)
+# ---------------------------------------------------------------------------
+
+def _fetch_yfinance(ticker: str) -> pd.DataFrame:
+    df = yf.download(ticker, period="1mo", interval="1h", progress=False, timeout=YFINANCE_TIMEOUT_SECONDS)
+    if df is None or df.empty:
+        raise ValueError("Resposta vazia do Yahoo Finance")
+    if isinstance(df.columns, pd.MultiIndex):
+        try:
+            df = df.xs(ticker, axis=1, level=1)
+        except KeyError:
+            df.columns = df.columns.get_level_values(0)
+    return df
+
+
+def _fetch_binance(limit: int = 200) -> pd.DataFrame:
+    resp = requests.get(
+        BINANCE_API_URL,
+        params={"symbol": BINANCE_SYMBOL, "interval": "1h", "limit": limit},
+        timeout=BINANCE_TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+    raw = resp.json()
+    if not raw:
+        raise ValueError("Resposta vazia da Binance")
+    timestamps = pd.to_datetime([row[0] for row in raw], unit="ms", utc=True)
+    df = pd.DataFrame(
+        {
+            "Close": [float(row[4]) for row in raw],
+            "High": [float(row[2]) for row in raw],
+            "Low": [float(row[3]) for row in raw],
+            "Volume": [float(row[5]) for row in raw],
+        },
+        index=timestamps,
+    )
+    df.index.name = "Datetime"
+    return df
+
+
+def _download_market_data(ticker: str) -> tuple[pd.DataFrame, str]:
+    """Tenta Yahoo Finance; em caso de falha, usa Binance."""
+    last_err: Exception | None = None
+    for attempt in range(1, YFINANCE_MAX_RETRIES + 1):
+        try:
+            df = _fetch_yfinance(ticker)
+            return df, "yfinance"
+        except Exception as exc:
+            last_err = exc
+            logger.warning("[agent] yfinance tentativa %d/%d falhou: %s", attempt, YFINANCE_MAX_RETRIES, exc)
+            if attempt < YFINANCE_MAX_RETRIES:
+                time.sleep(0.5 * attempt)
+
+    logger.warning("[agent] Fallback para Binance...")
+    try:
+        return _fetch_binance(), "binance"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Todas as fontes de dados falharam. Último erro yfinance: {last_err}. Binance: {exc}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Fábrica de ferramentas (encapsula ml_artifacts via closure)
+# ---------------------------------------------------------------------------
+
+def _make_tools(ml_artifacts: dict[str, Any]) -> list:
+    """Cria e retorna as 3 ferramentas LangChain para o agente ReAct."""
+
+    # ------------------------------------------------------------------
+    # 1. PrevisaoBitcoinTool
+    # ------------------------------------------------------------------
+    @tool
+    def previsao_bitcoin(query: str) -> str:  # noqa: ARG001
+        """Executa o pipeline de inferência LSTM e retorna a previsão do próximo fechamento
+        horário do Bitcoin (BTC-USD) em USD. Sempre chame esta ferramenta quando o usuário
+        perguntar sobre previsão, forecast ou próximo preço do BTC.
+        O parâmetro 'query' pode ser qualquer string — ela é ignorada internamente."""
+        model = ml_artifacts.get("model")
+        scaler = ml_artifacts.get("scaler")
+        if model is None or scaler is None:
+            return "Modelo não disponível. Os artefatos ainda não foram carregados."
+
+        try:
+            metadata = ml_artifacts.get("metadata", {})
+            n_features = metadata.get("n_features", 1)
+            scaler_return = ml_artifacts.get("scaler_return")
+
+            df, data_source = _download_market_data(SUPPORTED_TICKER)
+
+            if n_features > 1:
+                if not {"High", "Low", "Volume"}.issubset(df.columns):
+                    return "Dados OHLCV indisponíveis para inferência multi-feature."
+                ohlcv = df[["Close", "High", "Low", "Volume"]].dropna()
+                ohlcv = _remove_incomplete_hour_candle_df(ohlcv)
+
+                close_col = ohlcv["Close"]
+                log_return = np.log(close_col).diff()
+                rsi = _compute_rsi(close_col) / 100.0
+                macd_sig = _compute_macd_signal(close_col)
+                bb_pct = _compute_bollinger_pct_b(close_col)
+                sma_ratio = _compute_sma_ratio(close_col)
+                vol_ratio = _compute_volume_ratio(ohlcv["Volume"])
+
+                features_df = pd.DataFrame(
+                    {
+                        "log_return": log_return,
+                        "rsi": rsi,
+                        "macd_signal": macd_sig,
+                        "bb_pct_b": bb_pct,
+                        "sma_ratio": sma_ratio,
+                        "vol_ratio": vol_ratio,
+                    },
+                    index=ohlcv.index,
+                ).dropna()
+
+                if len(features_df) < LOOKBACK:
+                    return f"Dados insuficientes: {len(features_df)} candles disponíveis, necessário {LOOKBACK}."
+
+                window = features_df.to_numpy()[-LOOKBACK:]
+                scaled_input = scaler.transform(window)
+                X_input = scaled_input.reshape(1, LOOKBACK, n_features)
+
+                predicted_scaled = model.predict(X_input, verbose=0)
+
+                if scaler_return is not None:
+                    predicted_log_return = float(
+                        scaler_return.inverse_transform(predicted_scaled.reshape(-1, 1)).reshape(-1)[0]
+                    )
+                else:
+                    try:
+                        min_val = float(scaler.data_min_[0])
+                        max_val = float(scaler.data_max_[0])
+                        predicted_log_return = float(predicted_scaled.reshape(-1)[0]) * (max_val - min_val) + min_val
+                    except (AttributeError, IndexError):
+                        predicted_log_return = float(predicted_scaled.reshape(-1)[0])
+
+                last_close = float(ohlcv["Close"].iloc[-1])
+                last_ts = pd.Timestamp(features_df.index[-1])
+            else:
+                close_series = df["Close"].dropna()
+                close_series = _remove_incomplete_hour_candle(close_series)
+                log_price = pd.Series(np.log(close_series.values), index=close_series.index)
+                ret_series = log_price.diff().dropna()
+
+                if len(ret_series) < LOOKBACK:
+                    return f"Dados insuficientes: {len(ret_series)} candles disponíveis, necessário {LOOKBACK}."
+
+                last_returns = np.asarray(ret_series.to_numpy()[-LOOKBACK:], dtype=float).reshape(-1, 1)
+                scaled_input = scaler.transform(last_returns)
+                X_input = scaled_input.reshape(1, LOOKBACK, 1)
+
+                predicted_scaled = model.predict(X_input, verbose=0)
+                predicted_log_return = float(scaler.inverse_transform(predicted_scaled).reshape(-1)[0])
+                last_close = float(close_series.iloc[-1])
+                last_ts = pd.Timestamp(close_series.index[-1])
+
+            predicted_price = last_close * np.exp(predicted_log_return)
+            forecast_for_ts = last_ts + pd.Timedelta(hours=1)
+            forecast_close_ts = forecast_for_ts + pd.Timedelta(hours=1) - pd.Timedelta(seconds=1)
+
+            # Incerteza (MAPE/RMSE do metadata)
+            metrics = metadata.get("metrics", {}) if isinstance(metadata, dict) else {}
+            mape = metrics.get("mape_price")
+            rmse = metrics.get("rmse_price")
+            confidence_info = ""
+            if rmse is not None:
+                margin = 1.96 * float(rmse)
+                ci_low = max(0.0, predicted_price - margin)
+                ci_high = predicted_price + margin
+                confidence_info = f" | IC 95%: [{ci_low:,.2f} – {ci_high:,.2f}] USD"
+            elif mape is not None:
+                confidence_info = f" | erro estimado: {float(mape):.2f}%"
+
+            result = (
+                f"Previsão BTC-USD para {_ts_to_brt_iso(forecast_for_ts)} (BRT): "
+                f"**USD {predicted_price:,.2f}**{confidence_info}\n"
+                f"Último candle usado: {_ts_to_brt_iso(last_ts)} (BRT)\n"
+                f"Fechamento previsto até: {_ts_to_brt_iso(forecast_close_ts)} (BRT)\n"
+                f"Fonte de dados: {data_source}"
+            )
+            logger.info("[agent:previsao_bitcoin] %s", result)
+            return result
+
+        except Exception as exc:
+            logger.error("[agent:previsao_bitcoin] erro: %s", exc, exc_info=True)
+            return f"Erro ao gerar previsão: {exc}"
+
+    # ------------------------------------------------------------------
+    # 2. CotacaoAtualTool
+    # ------------------------------------------------------------------
+    @tool
+    def cotacao_atual(query: str) -> str:  # noqa: ARG001
+        """Consulta a cotação atual do Bitcoin (BTC-USD) em tempo real via Yahoo Finance
+        ou Binance (fallback automático). Retorna o preço de fechamento mais recente,
+        variação nas últimas 24h e o volume negociado. Use esta ferramenta quando o
+        usuário perguntar sobre o preço atual, cotação ou valor de mercado do BTC.
+        O parâmetro 'query' pode ser qualquer string."""
+        try:
+            df, data_source = _download_market_data(SUPPORTED_TICKER)
+            close_series = df["Close"].dropna()
+            close_series = _remove_incomplete_hour_candle(close_series)
+
+            if len(close_series) < 2:
+                return "Dados insuficientes para calcular cotação e variação."
+
+            last_price = float(close_series.iloc[-1])
+            prev_price = float(close_series.iloc[-2])
+            price_change_pct = ((last_price - prev_price) / prev_price) * 100
+            last_ts = pd.Timestamp(close_series.index[-1])
+
+            # Volume (se disponível)
+            volume_info = ""
+            if "Volume" in df.columns:
+                volume = df["Volume"].dropna()
+                if len(volume) > 0:
+                    last_vol = float(volume.iloc[-1])
+                    volume_info = f"\nVolume último candle: {last_vol:,.2f} BTC"
+
+            # Máxima e mínima das últimas 24h
+            price_24h_info = ""
+            recent_24h = close_series.iloc[-24:] if len(close_series) >= 24 else close_series
+            high_24h = float(recent_24h.max())
+            low_24h = float(recent_24h.min())
+            price_24h_info = f"\nMáxima 24h: USD {high_24h:,.2f} | Mínima 24h: USD {low_24h:,.2f}"
+
+            direction = "▲" if price_change_pct >= 0 else "▼"
+            result = (
+                f"Cotação BTC-USD:\n"
+                f"Preço atual: **USD {last_price:,.2f}**\n"
+                f"Variação vs candle anterior: {direction} {price_change_pct:+.2f}%"
+                f"{price_24h_info}{volume_info}\n"
+                f"Referência: {_ts_to_brt_iso(last_ts)} (BRT)\n"
+                f"Fonte: {data_source}"
+            )
+            logger.info("[agent:cotacao_atual] preço=%.2f variação=%.2f%%", last_price, price_change_pct)
+            return result
+
+        except Exception as exc:
+            logger.error("[agent:cotacao_atual] erro: %s", exc, exc_info=True)
+            return f"Erro ao consultar cotação: {exc}"
+
+    # ------------------------------------------------------------------
+    # 3. CryptoRAGTool  (busca simulada de contexto / notícias)
+    # ------------------------------------------------------------------
+    _RAG_KNOWLEDGE_BASE: list[dict[str, str]] = [
+        {
+            "keywords": ["halving", "halvening", "supply"],
+            "context": (
+                "O halving do Bitcoin em abril de 2024 reduziu a emissão de novos BTC de 6.25 para 3.125 "
+                "por bloco. Historicamente halvings precedem bull markets de 12-18 meses. No ciclo atual, "
+                "analistas estimam pico entre Q1 e Q3 de 2025, com alvos entre USD 80k e USD 150k."
+            ),
+        },
+        {
+            "keywords": ["etf", "spot", "institucional", "blackrock", "fidelity"],
+            "context": (
+                "Os ETFs de bitcoin spot aprovados pela SEC em janeiro de 2024 (BlackRock IBIT, Fidelity FBTC, "
+                "entre outros) acumularam mais de USD 50 bilhões em AUM em menos de 12 meses, representando "
+                "demanda institucional inédita. Fluxos positivos sustentados tendem a sustentar o preço."
+            ),
+        },
+        {
+            "keywords": ["regulação", "regulamento", "sec", "governo", "ban", "proibição"],
+            "context": (
+                "O ambiente regulatório global melhorou significativamente em 2024-2025. EUA avançaram com "
+                "clareza regulatória pós-eleição. Europa implementou MiCA. Ásia: Japão e Hong Kong aceitaram "
+                "ETFs; China mantém restrições, mas mineração migrou para EUA, Cazaquistão e Canadá."
+            ),
+        },
+        {
+            "keywords": ["macro", "juros", "fed", "inflação", "dólar", "recessão"],
+            "context": (
+                "Bitcoin correlaciona-se negativamente com o DXY (índice do dólar) e positivamente com "
+                "ativos de risco em momentos de corte de juros. Com o Federal Reserve em ciclo de flexibilização "
+                "desde setembro de 2024, o ambiente macro é favorável para ativos de risco, incluindo cripto."
+            ),
+        },
+        {
+            "keywords": ["dominância", "altcoin", "ethereum", "eth", "season"],
+            "context": (
+                "A dominância do Bitcoin ficou acima de 55% durante a maior parte de 2024, indicando que "
+                "os fluxos institucionais concentraram-se em BTC via ETF. Rotação para altcoins (altseason) "
+                "tipicamente ocorre 6-12 meses após o pico de dominância do BTC."
+            ),
+        },
+        {
+            "keywords": ["previsão", "forecast", "análise técnica", "suporte", "resistência", "rsi", "macd"],
+            "context": (
+                "O modelo LSTM treinado usa 6 features técnicas: log_return, RSI(14), MACD Signal, "
+                "Bollinger %B, razão SMA(7/21) e razão de volume. Ele foi treinado com dados horários "
+                "dos últimos 730 dias e validado via walk-forward backtest em 3 folds. O erro médio "
+                "(MAPE) sobre o conjunto de teste foi inferior a 2% para horizontes de 1 hora."
+            ),
+        },
+        {
+            "keywords": ["risco", "volatilidade", "drawdown", "perda"],
+            "context": (
+                "Bitcoin é um ativo de alta volatilidade: o desvio padrão diário histórico fica entre "
+                "3% e 5%. Drawdowns de 30-50% são comuns em mercados de baixa. O modelo LSTM fornece "
+                "um intervalo de confiança de 95% baseado no RMSE do backtest para quantificar incerteza."
+            ),
+        },
+    ]
+
+    @tool
+    def crypto_rag(query: str) -> str:
+        """Busca no repositório interno de conhecimento financeiro e de criptomoedas para fornecer
+        contexto adicional ao agente. Use esta ferramenta quando o usuário perguntar sobre fatores
+        macroeconômicos, regulação, ETFs, halving, análise técnica ou qualquer contexto de mercado
+        que possa enriquecer a resposta. Passe palavras-chave da pergunta do usuário como 'query'."""
+        query_lower = query.lower()
+        matched: list[str] = []
+        for entry in _RAG_KNOWLEDGE_BASE:
+            if any(kw in query_lower for kw in entry["keywords"]):
+                matched.append(entry["context"])
+
+        if not matched:
+            # Fallback: retornar contexto geral
+            matched = [
+                "Bitcoin (BTC) é a maior criptomoeda por capitalização de mercado. "
+                "Seu preço é influenciado por: demanda institucional, política monetária global, "
+                "ciclos de halving, adoção regulatória e sentimento de mercado."
+            ]
+
+        result = "\n\n".join(f"[Contexto {i + 1}] {ctx}" for i, ctx in enumerate(matched))
+        logger.info("[agent:crypto_rag] query=%r → %d contextos encontrados", query, len(matched))
+        return result
+
+    return [previsao_bitcoin, cotacao_atual, crypto_rag]
+
+
+def _remove_incomplete_hour_candle_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove a última linha do DataFrame se ela corresponder ao candle horário em formação."""
+    if len(df) < 2:
+        return df
+    last_ts = pd.Timestamp(df.index[-1])
+    now_utc = pd.Timestamp.utcnow()
+    now_ref = now_utc.tz_localize(None) if last_ts.tzinfo is None else now_utc.tz_convert(last_ts.tz)
+    if last_ts >= now_ref.floor("h"):
+        return df.iloc[:-1]
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Prompt ReAct
+# ---------------------------------------------------------------------------
+_REACT_PROMPT_TEMPLATE = """Você é um assistente especialista em mercados de criptomoedas, com acesso a
+dados de mercado em tempo real e um modelo LSTM para previsão do Bitcoin.
+
+Responda sempre em português brasileiro. Seja preciso, objetivo e cite os dados retornados pelas ferramentas.
+
+Você tem acesso às seguintes ferramentas:
+
+{tools}
+
+Use o seguinte formato estritamente:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Begin!
+
+Question: {input}
+Thought:{agent_scratchpad}"""
+
+_REACT_PROMPT = PromptTemplate.from_template(_REACT_PROMPT_TEMPLATE)
+
+
+# ---------------------------------------------------------------------------
+# Fábrica do agente
+# ---------------------------------------------------------------------------
+
+def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
+    """Constrói e retorna um AgentExecutor ReAct configurado com as 3 ferramentas.
+
+    Requer a variável de ambiente OPENAI_API_KEY.
+
+    Args:
+        ml_artifacts: dicionário compartilhado com 'model', 'scaler', 'scaler_return' e 'metadata'.
+
+    Returns:
+        AgentExecutor pronto para receber ``{"input": "<pergunta>"}`` via ``.invoke()``.
+    """
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        raise EnvironmentError("A variável OPENAI_API_KEY não está definida.")
+
+    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    temperature = float(os.getenv("OPENAI_TEMPERATURE", "0"))
+
+    llm = ChatOpenAI(
+        model=model_name,
+        temperature=temperature,
+        api_key=openai_api_key,
+    )
+
+    tools = _make_tools(ml_artifacts)
+
+    agent = create_react_agent(llm=llm, tools=tools, prompt=_REACT_PROMPT)
+
+    return AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=True,
+        handle_parsing_errors=True,
+        max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "6")),
+        return_intermediate_steps=True,
+    )
