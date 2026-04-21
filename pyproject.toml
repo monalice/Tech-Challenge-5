@@ -40,7 +40,7 @@ module = [
   "boto3.*",
   "dvc.*",
   "langchain.*",
-  "langchain_openai.*",
+  "langchain_google_genai.*",
   "ragas.*",
   "presidio_analyzer.*",
   "presidio_anonymizer.*",

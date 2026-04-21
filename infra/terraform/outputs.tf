@@ -28,9 +28,9 @@ output "ecs_service_name" {
   value       = aws_ecs_service.app.name
 }
 
-output "openai_secret_arn" {
-  description = "Secrets Manager ARN for OPENAI_API_KEY"
-  value       = aws_secretsmanager_secret.openai_api_key.arn
+output "google_secret_arn" {
+  description = "Secrets Manager ARN for GOOGLE_API_KEY"
+  value       = aws_secretsmanager_secret.google_api_key.arn
 }
 
 output "db_password_secret_arn" {

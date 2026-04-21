@@ -1,0 +1,6 @@
+[core]
+    remote = localremote
+['remote "s3remote"']
+    url = s3://meu-bucket/dvc-store
+['remote "localremote"']
+    url = localstore

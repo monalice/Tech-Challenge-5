@@ -74,12 +74,12 @@ Após subir a aplicação, acesse:
   - Inclui: timestamp, ticker, modo de entrada, candle usado, previsão, fonte de dados e latência.
   - Útil para **auditoria**, **detecção de drift** e comparação posterior com valores reais.
 - `POST /chat`
-  - Endpoint do **Agente LLM ReAct** (LangChain + OpenAI).
+=  - Endpoint do **Agente LLM ReAct** (LangChain + Gemini).
   - Recebe uma mensagem em linguagem natural e orquestra 3 ferramentas:
     - `PrevisaoBitcoinTool` — executa o pipeline de inferência LSTM e retorna a previsão.
     - `CotacaoAtualTool` — consulta o preço atual do BTC via yfinance / Binance.
-    - `CryptoRAGTool` — fornece contexto financeiro (halving, ETFs, macro, etc.).
-  - Requer a variável de ambiente `OPENAI_API_KEY`.
+    - `CryptoKnowledgeRAG` — fornece contexto financeiro e notícias cripto via vector store local.
+  - Requer a variável de ambiente `GOOGLE_API_KEY`.
   - Exemplo de body:
 
 ```json
@@ -158,7 +158,7 @@ cp .env .env.local   # edite .env.local com suas credenciais reais
 O arquivo `.env` contém as seguintes variáveis (todas com valores de exemplo):
 
 | Variável | Descrição |
-|---|---|
+| --- | --- |
 | `MLFLOW_TRACKING_URI` | URI do servidor MLflow (ex.: PostgreSQL RDS) |
 | `MLFLOW_ARTIFACT_URI` | URI do bucket S3 para artefatos |
 | `MLFLOW_EXPERIMENT_NAME` | Nome do experimento MLflow |
@@ -192,6 +192,27 @@ O modelo treinado com `train_model.py` incorpora:
 - **Learning rate scheduling**: `ReduceLROnPlateau` reduz a taxa de aprendizado automaticamente quando o progresso estagna.
 - **Walk-forward backtest**: validação temporal em 3 folds para estimar performance fora da amostra.
 
+## Data Management com DVC
+
+O projeto inclui um pipeline DVC em [dvc.yaml](dvc.yaml) e um script de setup em [scripts/setup_dvc.sh](scripts/setup_dvc.sh).
+
+Fluxo recomendado:
+
+1. Instale as dependências na `.venv` com `pip install -r requirements.txt`.
+2. Execute o setup inicial do DVC com `bash scripts/setup_dvc.sh`.
+3. Reproduza o pipeline com `dvc repro`.
+
+O setup realiza:
+
+- `dvc init`
+- configuração do remote padrão `s3remote`
+- `dvc add models/btc_hourly_cache.csv`
+
+O pipeline DVC orquestra:
+
+- `prepare_data`: geração/atualização de `models/btc_hourly_cache.csv`
+- `train_model`: treino do modelo em [src/train_model.py](src/train_model.py)
+
 ## Deploy de infraestrutura AWS (Terraform)
 
 Os arquivos IaC estão em [infra/terraform](infra/terraform), incluindo:
@@ -200,12 +221,12 @@ Os arquivos IaC estão em [infra/terraform](infra/terraform), incluindo:
 - RDS PostgreSQL para metadados do MLflow
 - ECR para imagem Docker
 - ECS/Fargate para execução da API
-- Secrets Manager para `OPENAI_API_KEY` e senha do banco
+- Secrets Manager para `GOOGLE_API_KEY` e senha do banco
 
 ### Preparação
 
 1. Copie [infra/terraform/terraform.tfvars.example](infra/terraform/terraform.tfvars.example) para [infra/terraform/terraform.tfvars](infra/terraform/terraform.tfvars).
-2. Preencha os valores reais de `db_password` e `openai_api_key`.
+2. Preencha os valores reais de `db_password` e `google_api_key`.
 
 ### Execução (PowerShell)
 
@@ -227,6 +248,16 @@ Para aplicar sem confirmação interativa:
 ```powershell
 ./scripts/deploy_terraform.ps1 -Action apply -AutoApprove
 ```
+
+## Documentação do Projeto
+
+Além da documentação operacional da API, o projeto inclui artefatos de governança, risco e arquitetura em [docs](docs):
+
+- [docs/MODEL_CARD.md](docs/MODEL_CARD.md) — dataset, arquitetura LSTM, métricas e limitações do modelo.
+- [docs/SYSTEM_CARD.md](docs/SYSTEM_CARD.md) — arquitetura cloud, fluxo de dados e guardrails do sistema.
+- [docs/LGPD_PLAN.md](docs/LGPD_PLAN.md) — uso de Presidio para proteção de PII e diretrizes LGPD.
+- [docs/OWASP_MAPPING.md](docs/OWASP_MAPPING.md) — mapeamento de ameaças OWASP Top 10 para LLMs e mitigações no código.
+- [docs/RED_TEAM_REPORT.md](docs/RED_TEAM_REPORT.md) — cenários adversariais testados contra o Agente ReAct.
 
 ## Observações
 

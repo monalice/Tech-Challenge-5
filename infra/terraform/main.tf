@@ -69,17 +69,17 @@ resource "aws_s3_bucket_public_access_block" "artifacts_pab" {
   restrict_public_buckets = true
 }
 
-resource "aws_secretsmanager_secret" "openai_api_key" {
-  name = "${local.name_prefix}/openai-api-key"
+resource "aws_secretsmanager_secret" "google_api_key" {
+  name = "${local.name_prefix}/google-api-key"
 
   tags = merge(local.common_tags, {
-    Name = "${local.name_prefix}-openai-secret"
+    Name = "${local.name_prefix}-google-secret"
   })
 }
 
-resource "aws_secretsmanager_secret_version" "openai_api_key" {
-  secret_id     = aws_secretsmanager_secret.openai_api_key.id
-  secret_string = var.openai_api_key
+resource "aws_secretsmanager_secret_version" "google_api_key" {
+  secret_id     = aws_secretsmanager_secret.google_api_key.id
+  secret_string = var.google_api_key
 }
 
 resource "aws_secretsmanager_secret" "db_password" {
@@ -234,7 +234,7 @@ data "aws_iam_policy_document" "ecs_execution_secrets" {
     ]
 
     resources = [
-      aws_secretsmanager_secret.openai_api_key.arn,
+      aws_secretsmanager_secret.google_api_key.arn,
       aws_secretsmanager_secret.db_password.arn
     ]
   }
@@ -289,8 +289,8 @@ resource "aws_ecs_task_definition" "app" {
 
       secrets = [
         {
-          name      = "OPENAI_API_KEY"
-          valueFrom = aws_secretsmanager_secret.openai_api_key.arn
+          name      = "GOOGLE_API_KEY"
+          valueFrom = aws_secretsmanager_secret.google_api_key.arn
         },
         {
           name      = "DB_PASSWORD"

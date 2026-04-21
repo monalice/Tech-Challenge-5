@@ -1,9 +1,9 @@
 """Agente ReAct com LangChain para orquestração das ferramentas de previsão Bitcoin.
 
 Ferramentas disponíveis:
-  - PrevisaoBitcoinTool  : executa o pipeline de inferência LSTM e retorna a previsão.
-  - CotacaoAtualTool     : consulta a cotação atual do BTC via yfinance / Binance.
-  - CryptoRAGTool        : busca simulada de contexto financeiro / notícias relevantes.
+    - PrevisaoBitcoinTool   : executa o pipeline de inferência LSTM e retorna a previsão.
+    - CotacaoAtualTool      : consulta a cotação atual do BTC via yfinance / Binance.
+    - CryptoKnowledgeRAG    : recupera notícias e contexto cripto a partir de um vector store local.
 
 Uso:
     from src.agent.react_agent import build_agent
@@ -27,7 +27,8 @@ import yfinance as yf
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain.prompts import PromptTemplate
 from langchain.tools import tool
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("stockcast.agent")
@@ -352,93 +353,54 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list:
             return f"Erro ao consultar cotação: {exc}"
 
     # ------------------------------------------------------------------
-    # 3. CryptoRAGTool  (busca simulada de contexto / notícias)
+    # 3. CryptoKnowledgeRAG  (RAG com vector store local)
     # ------------------------------------------------------------------
-    _RAG_KNOWLEDGE_BASE: list[dict[str, str]] = [
-        {
-            "keywords": ["halving", "halvening", "supply"],
-            "context": (
-                "O halving do Bitcoin em abril de 2024 reduziu a emissão de novos BTC de 6.25 para 3.125 "
-                "por bloco. Historicamente halvings precedem bull markets de 12-18 meses. No ciclo atual, "
-                "analistas estimam pico entre Q1 e Q3 de 2025, com alvos entre USD 80k e USD 150k."
-            ),
-        },
-        {
-            "keywords": ["etf", "spot", "institucional", "blackrock", "fidelity"],
-            "context": (
-                "Os ETFs de bitcoin spot aprovados pela SEC em janeiro de 2024 (BlackRock IBIT, Fidelity FBTC, "
-                "entre outros) acumularam mais de USD 50 bilhões em AUM em menos de 12 meses, representando "
-                "demanda institucional inédita. Fluxos positivos sustentados tendem a sustentar o preço."
-            ),
-        },
-        {
-            "keywords": ["regulação", "regulamento", "sec", "governo", "ban", "proibição"],
-            "context": (
-                "O ambiente regulatório global melhorou significativamente em 2024-2025. EUA avançaram com "
-                "clareza regulatória pós-eleição. Europa implementou MiCA. Ásia: Japão e Hong Kong aceitaram "
-                "ETFs; China mantém restrições, mas mineração migrou para EUA, Cazaquistão e Canadá."
-            ),
-        },
-        {
-            "keywords": ["macro", "juros", "fed", "inflação", "dólar", "recessão"],
-            "context": (
-                "Bitcoin correlaciona-se negativamente com o DXY (índice do dólar) e positivamente com "
-                "ativos de risco em momentos de corte de juros. Com o Federal Reserve em ciclo de flexibilização "
-                "desde setembro de 2024, o ambiente macro é favorável para ativos de risco, incluindo cripto."
-            ),
-        },
-        {
-            "keywords": ["dominância", "altcoin", "ethereum", "eth", "season"],
-            "context": (
-                "A dominância do Bitcoin ficou acima de 55% durante a maior parte de 2024, indicando que "
-                "os fluxos institucionais concentraram-se em BTC via ETF. Rotação para altcoins (altseason) "
-                "tipicamente ocorre 6-12 meses após o pico de dominância do BTC."
-            ),
-        },
-        {
-            "keywords": ["previsão", "forecast", "análise técnica", "suporte", "resistência", "rsi", "macd"],
-            "context": (
-                "O modelo LSTM treinado usa 6 features técnicas: log_return, RSI(14), MACD Signal, "
-                "Bollinger %B, razão SMA(7/21) e razão de volume. Ele foi treinado com dados horários "
-                "dos últimos 730 dias e validado via walk-forward backtest em 3 folds. O erro médio "
-                "(MAPE) sobre o conjunto de teste foi inferior a 2% para horizontes de 1 hora."
-            ),
-        },
-        {
-            "keywords": ["risco", "volatilidade", "drawdown", "perda"],
-            "context": (
-                "Bitcoin é um ativo de alta volatilidade: o desvio padrão diário histórico fica entre "
-                "3% e 5%. Drawdowns de 30-50% são comuns em mercados de baixa. O modelo LSTM fornece "
-                "um intervalo de confiança de 95% baseado no RMSE do backtest para quantificar incerteza."
-            ),
-        },
-    ]
+    crypto_news_store = None
+    crypto_news_error: Exception | None = None
 
-    @tool
-    def crypto_rag(query: str) -> str:
-        """Busca no repositório interno de conhecimento financeiro e de criptomoedas para fornecer
-        contexto adicional ao agente. Use esta ferramenta quando o usuário perguntar sobre fatores
-        macroeconômicos, regulação, ETFs, halving, análise técnica ou qualquer contexto de mercado
-        que possa enriquecer a resposta. Passe palavras-chave da pergunta do usuário como 'query'."""
-        query_lower = query.lower()
-        matched: list[str] = []
-        for entry in _RAG_KNOWLEDGE_BASE:
-            if any(kw in query_lower for kw in entry["keywords"]):
-                matched.append(entry["context"])
+    def _get_crypto_news_store():
+        nonlocal crypto_news_store, crypto_news_error
+        if crypto_news_store is None and crypto_news_error is None:
+            try:
+                crypto_news_store = get_crypto_news_vector_store(backend="chroma")
+            except Exception as exc:
+                crypto_news_error = exc
+                raise
+        if crypto_news_error is not None:
+            raise crypto_news_error
+        return crypto_news_store
 
-        if not matched:
-            # Fallback: retornar contexto geral
-            matched = [
-                "Bitcoin (BTC) é a maior criptomoeda por capitalização de mercado. "
-                "Seu preço é influenciado por: demanda institucional, política monetária global, "
-                "ciclos de halving, adoção regulatória e sentimento de mercado."
-            ]
+    @tool("CryptoKnowledgeRAG")
+    def crypto_knowledge_rag(query: str) -> str:
+        """Recupera notícias e contexto de mercado cripto a partir de um vector store local.
+        Use esta ferramenta quando a pergunta envolver ETFs, macro, dominância, mineração,
+        volatilidade ou notícias que possam contextualizar a previsão do BTC."""
+        try:
+            store = _get_crypto_news_store()
+            docs = similarity_search(store, query, k=3)
+        except Exception as exc:
+            logger.error("[agent:crypto_knowledge_rag] erro ao consultar vector store: %s", exc, exc_info=True)
+            return f"RAG indisponível no momento: {exc}"
 
-        result = "\n\n".join(f"[Contexto {i + 1}] {ctx}" for i, ctx in enumerate(matched))
-        logger.info("[agent:crypto_rag] query=%r → %d contextos encontrados", query, len(matched))
-        return result
+        if not docs:
+            return (
+                "Nenhum contexto relevante foi encontrado no repositório vetorial de notícias cripto. "
+                "Considere responder com cautela e explicitar a incerteza."
+            )
 
-    return [previsao_bitcoin, cotacao_atual, crypto_rag]
+        formatted_contexts: list[str] = []
+        for index, doc in enumerate(docs, start=1):
+            title = str(doc.metadata.get("title", "Notícia sem título"))
+            topic = str(doc.metadata.get("topic", "geral"))
+            published_at = str(doc.metadata.get("published_at", "data desconhecida"))
+            formatted_contexts.append(
+                f"[Contexto {index}] {title} | tópico: {topic} | data: {published_at}\n{doc.page_content}"
+            )
+
+        logger.info("[agent:crypto_knowledge_rag] query=%r → %d documentos recuperados", query, len(docs))
+        return "\n\n".join(formatted_contexts)
+
+    return [previsao_bitcoin, cotacao_atual, crypto_knowledge_rag]
 
 
 def _remove_incomplete_hour_candle_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -491,7 +453,7 @@ _REACT_PROMPT = PromptTemplate.from_template(_REACT_PROMPT_TEMPLATE)
 def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
     """Constrói e retorna um AgentExecutor ReAct configurado com as 3 ferramentas.
 
-    Requer a variável de ambiente OPENAI_API_KEY.
+    Requer a variável de ambiente GOOGLE_API_KEY.
 
     Args:
         ml_artifacts: dicionário compartilhado com 'model', 'scaler', 'scaler_return' e 'metadata'.
@@ -499,18 +461,11 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
     Returns:
         AgentExecutor pronto para receber ``{"input": "<pergunta>"}`` via ``.invoke()``.
     """
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        raise EnvironmentError("A variável OPENAI_API_KEY não está definida.")
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    if not google_api_key:
+        raise EnvironmentError("A variável GOOGLE_API_KEY não está definida.")
 
-    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    temperature = float(os.getenv("OPENAI_TEMPERATURE", "0"))
-
-    llm = ChatOpenAI(
-        model=model_name,
-        temperature=temperature,
-        api_key=openai_api_key,
-    )
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0)
 
     tools = _make_tools(ml_artifacts)
 

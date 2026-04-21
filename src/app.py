@@ -739,9 +739,9 @@ def predict_next_hour(
     summary="Chat com o Agente LLM (ReAct)",
     description=(
         "Recebe uma mensagem em linguagem natural e a processa com um Agente ReAct "
-        "(LangChain + OpenAI). O agente orquestra 3 ferramentas: PrevisaoBitcoinTool "
+        "(LangChain + Gemini). O agente orquestra 3 ferramentas: PrevisaoBitcoinTool "
         "(inferência LSTM), CotacaoAtualTool (cotação em tempo real) e CryptoRAGTool "
-        "(contexto de mercado simulado). Requer a variável de ambiente OPENAI_API_KEY."
+        "(contexto de mercado simulado). Requer a variável de ambiente GOOGLE_API_KEY."
     ),
 )
 def chat(request: ChatRequest):

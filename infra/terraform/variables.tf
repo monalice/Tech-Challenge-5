@@ -46,8 +46,8 @@ variable "db_allocated_storage" {
   default     = 20
 }
 
-variable "openai_api_key" {
-  description = "OpenAI API key stored in Secrets Manager"
+variable "google_api_key" {
+  description = "Google AI Studio API key stored in Secrets Manager"
   type        = string
   sensitive   = true
 }
