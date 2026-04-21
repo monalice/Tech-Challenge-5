@@ -1,0 +1,30 @@
+{
+  "ticker": "BTC-USD",
+  "target": "log_return",
+  "lookback": 60,
+  "interval": "1h",
+  "period": "730d",
+  "seed": 42,
+  "n_features": 6,
+  "features": [
+    "log_return",
+    "rsi",
+    "macd_signal",
+    "bb_pct_b",
+    "sma_ratio",
+    "vol_ratio"
+  ],
+  "architecture": "bidirectional_lstm_multifeature",
+  "metrics": {
+    "mae_price": 285.45780958843454,
+    "rmse_price": 411.7225301521531,
+    "mape_price": 0.36791629287692384,
+    "mae_price_baseline": 261.81397545662105,
+    "rmse_price_baseline": 395.20002109564865,
+    "mape_price_baseline": 0.3390149836536254,
+    "mae_return": 0.0036835836977545063,
+    "mae_return_baseline": 0.004907308317507531,
+    "direction_accuracy_pct": 50.114155251141554
+  },
+  "beats_baseline": false
+}
