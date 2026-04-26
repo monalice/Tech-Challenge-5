@@ -178,26 +178,7 @@ Treine localmente apenas se quiser gerar novos artefatos com o modelo melhorado.
 
 ### 1. Configurar variáveis de ambiente
 
-Copie o arquivo de exemplo e preencha os valores reais antes de executar:
-
-```bash
-cp .env .env.local   # edite .env.local com suas credenciais reais
-```
-
-O arquivo `.env` contém as seguintes variáveis (todas com valores de exemplo):
-
-| Variável | Descrição |
-| --- | --- |
-| `MLFLOW_TRACKING_URI` | URI do servidor MLflow (ex.: PostgreSQL RDS) |
-| `MLFLOW_ARTIFACT_URI` | URI do bucket S3 para artefatos |
-| `MLFLOW_EXPERIMENT_NAME` | Nome do experimento MLflow |
-| `MLFLOW_MODEL_NAME` | Tag `model_name` registrada no run |
-| `MLFLOW_MODEL_VERSION` | Tag `model_version` registrada no run |
-| `MLFLOW_OWNER` | Tag `owner` registrada no run |
-| `MLFLOW_RISK_LEVEL` | Tag `risk_level` registrada no run |
-| `AWS_ACCESS_KEY_ID` | Credencial AWS para escrita no S3 |
-| `AWS_SECRET_ACCESS_KEY` | Credencial AWS para escrita no S3 |
-| `AWS_DEFAULT_REGION` | Região AWS do bucket |
+Copie [.env.example](.env.example) para `.env` e preencha com os valores reais. Consulte a [seção de variáveis de ambiente](#variáveis-de-ambiente) para detalhes de cada chave.
 
 ### 2. Executar o treinamento
 
@@ -287,6 +268,130 @@ Além da documentação operacional da API, o projeto inclui artefatos de govern
 - [docs/LGPD_PLAN.md](docs/LGPD_PLAN.md) — uso de Presidio para proteção de PII e diretrizes LGPD.
 - [docs/OWASP_MAPPING.md](docs/OWASP_MAPPING.md) — mapeamento de ameaças OWASP Top 10 para LLMs e mitigações no código.
 - [docs/RED_TEAM_REPORT.md](docs/RED_TEAM_REPORT.md) — cenários adversariais testados contra o Agente ReAct.
+
+## Desenvolvimento
+
+### Makefile — atalhos principais
+
+O projeto inclui um `Makefile` com os comandos mais comuns:
+
+```bash
+make install       # instala dependências de desenvolvimento
+make lint          # ruff check em src/, monitoring/, tests/
+make type-check    # mypy com --explicit-package-bases
+make security      # bandit -r src/
+make test          # pytest com cobertura mínima de 60 %
+make quality       # lint + type-check + security + test
+make train         # executa src/train_model.py
+make serve         # sobe a API localmente com reload
+make docker-build  # docker build -t btc-predictor:latest .
+```
+
+### Pre-commit hooks
+
+O arquivo [.pre-commit-config.yaml](.pre-commit-config.yaml) configura hooks automáticos de qualidade:
+
+```bash
+pip install pre-commit
+pre-commit install        # instala os hooks no repositório
+pre-commit run --all-files  # executa manualmente em todos os arquivos
+```
+
+Hooks ativos: `ruff` (lint + format), `trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-merge-conflict`.
+
+### Variáveis de ambiente
+
+Copie [.env.example](.env.example) e preencha com os valores reais:
+
+```bash
+cp .env.example .env
+```
+
+| Variável | Descrição |
+|---|---|
+| `GOOGLE_API_KEY` | Chave da Google AI (obrigatória para o agente ReAct) |
+| `MLFLOW_TRACKING_URI` | URI do servidor MLflow (ex.: PostgreSQL RDS) |
+| `MLFLOW_EXPERIMENT_NAME` | Nome do experimento MLflow |
+| `AWS_REGION` | Região AWS para ECR/ECS |
+| `ECR_REPOSITORY` | Nome do repositório ECR |
+| `ECS_CLUSTER` | Cluster ECS para deploy |
+| `LANGFUSE_PUBLIC_KEY` | Chave pública Langfuse (opcional) |
+| `LANGFUSE_SECRET_KEY` | Chave secreta Langfuse (opcional) |
+| `APP_PORT` | Porta da aplicação (padrão: `8000`) |
+
+## Telemetria de Qualidade LLM (Langfuse)
+
+O agente ReAct é instrumentado com **[Langfuse](https://cloud.langfuse.com)** para rastreamento de qualidade das chamadas LLM. A integração é **opcional e não bloqueante**: o agente opera normalmente se as credenciais não estiverem definidas.
+
+Para ativar, defina as variáveis no `.env`:
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+Métricas rastreadas por trace: faithfulness, relevância da resposta, latência por chamada LLM, contagem de tokens e sequência de ferramentas invocadas.
+
+## Avaliação de Qualidade RAG (RAGAS)
+
+O golden set com **21 pares Q&A** está em [`data/golden_set/btc_rag_golden_set.json`](data/golden_set/btc_rag_golden_set.json), cobrindo 10 categorias de perguntas:
+
+| Categoria | Exemplos de perguntas |
+|---|---|
+| `model_scope` | O que o modelo prevê? Qual o horizonte temporal? |
+| `technical_analysis` | Quais features técnicas usa o LSTM? |
+| `uncertainty` | O modelo indica incerteza da previsão? |
+| `agent_tools` | Quais ferramentas o agente ReAct usa? |
+| `trend_analysis` | Qual a dominância do BTC em 2024? |
+| `market_events` | O que foi o halving de 2024? Por que ETFs spot importam? |
+| `market_context` | Como macro influencia o BTC? |
+| `data_sources` | Qual fonte de dados foi usada? E se o Yahoo falhar? |
+| `api_usage` | Endpoint de histórico de previsões? Diferença /live vs /health? |
+| `monitoring` | Que métricas operacionais a API expõe? |
+
+Cada par tem a estrutura:
+
+```json
+{
+  "query": "...",
+  "expected_answer": "...",
+  "answer": "...",
+  "contexts": ["contexto 1", "contexto 2"],
+  "metadata": { "category": "trend_analysis", "difficulty": "medium" }
+}
+```
+
+Para avaliar com as 4 métricas RAGAS (faithfulness, answer_relevancy, context_precision, context_recall):
+
+```bash
+# Usando respostas pré-computadas no golden set (sem chamada de API)
+python evaluation/ragas_eval.py \
+  --golden-set data/golden_set/btc_rag_golden_set.json
+
+# Gerando respostas ao vivo via /chat (API rodando)
+python evaluation/ragas_eval.py \
+  --golden-set data/golden_set/btc_rag_golden_set.json \
+  --api-url http://localhost:8000
+```
+
+Requer `GOOGLE_API_KEY` no ambiente. Resultados salvos em `evaluation/ragas_results.json`.
+
+## Configuração de Monitoramento
+
+O arquivo [`configs/monitoring_config.yaml`](configs/monitoring_config.yaml) centraliza os parâmetros de detecção de drift e nomenclatura do Model Registry:
+
+```yaml
+drift:
+  psi_warning_threshold: 0.1   # PSI ≥ 0.1 → alerta
+  psi_retrain_threshold: 0.2   # PSI ≥ 0.2 → re-treino recomendado
+  check_interval_hours: 24
+  min_rows_for_comparison: 50
+
+model:
+  name: "btc-lstm-hourly"
+  registry_stage_production: "Production"
+  registry_stage_challenger: "Staging"
+```
 
 ## Observações
 
