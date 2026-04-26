@@ -1,16 +1,15 @@
-"""RAG pipeline utilities backed by OpenAI embeddings and a local vector store."""
+"""RAG pipeline utilities backed by Google embeddings and a local vector store."""
 
 from __future__ import annotations
 
 from functools import lru_cache
-import os
 from pathlib import Path
 from typing import Literal, Sequence
 
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_EMBEDDING_MODEL = "models/text-embedding-004"
 DEFAULT_CHROMA_DIR = Path("data/processed/crypto_news_chroma")
 VectorStoreBackend = Literal["chroma", "faiss"]
 
@@ -68,17 +67,9 @@ SIMULATED_CRYPTO_NEWS: list[dict[str, str]] = [
 ]
 
 
-def _ensure_openai_api_key() -> None:
-    if not os.getenv("OPENAI_API_KEY"):
-        raise EnvironmentError(
-            "OPENAI_API_KEY nao esta definida. Configure a chave antes de inicializar o pipeline RAG."
-        )
-
-
-def build_openai_embeddings(model: str = DEFAULT_EMBEDDING_MODEL) -> OpenAIEmbeddings:
-    """Create the OpenAI embedding client used by the RAG pipeline."""
-    _ensure_openai_api_key()
-    return OpenAIEmbeddings(model=model)
+def build_google_embeddings(model: str = DEFAULT_EMBEDDING_MODEL) -> GoogleGenerativeAIEmbeddings:
+    """Create the Google embedding client used by the RAG pipeline."""
+    return GoogleGenerativeAIEmbeddings(model=model)
 
 
 def build_documents(texts: Sequence[str], metadatas: Sequence[dict] | None = None) -> list[Document]:
@@ -120,8 +111,8 @@ def build_vector_store(
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     persist_directory: str | Path | None = None,
 ):
-    """Build a Chroma or FAISS vector store using OpenAI embeddings."""
-    embeddings = build_openai_embeddings(model=embedding_model)
+    """Build a Chroma or FAISS vector store using Google embeddings."""
+    embeddings = build_google_embeddings(model=embedding_model)
     docs = list(documents)
 
     if backend == "chroma":
