@@ -39,6 +39,7 @@ jobs:
         env:
           TF_ENABLE_ONEDNN_OPTS: "0"
           TF_CPP_MIN_LOG_LEVEL: "2"
+          GOOGLE_API_KEY: "mock_key_para_testes"
         run: pytest --cov=src --cov=monitoring --cov-config=.coveragerc --cov-report=term-missing --cov-fail-under=60
 
   cd:
@@ -65,6 +66,12 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install DVC and pull models from S3
+        run: |
+          python -m pip install --upgrade pip
+          pip install dvc[s3]
+          dvc pull
 
       - name: Login to Amazon ECR
         id: login-ecr
