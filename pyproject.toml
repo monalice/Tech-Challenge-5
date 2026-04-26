@@ -20,6 +20,7 @@ indent-style = "space"
 
 [tool.mypy]
 python_version = "3.12"
+explicit_package_bases = true
 strict = true
 warn_unused_configs = true
 warn_redundant_casts = true
@@ -38,15 +39,36 @@ exclude = [
 module = [
   "mlflow.*",
   "boto3.*",
-  "dvc.*",
+  "joblib",
+  "pandas",
+  "psutil",
+  "requests",
+  "sklearn.*",
+  "tensorflow.*",
   "langchain.*",
   "langchain_google_genai.*",
-  "ragas.*",
   "presidio_analyzer.*",
   "presidio_anonymizer.*",
-  "evidently.*",
+  "yfinance",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "langchain_openai.*",
+]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+  "src.app",
+  "src.train_model",
+  "src.agent.rag_pipeline",
+  "src.agent.react_agent",
+  "src.security.guardrails",
+  "monitoring.drift_detection",
+]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

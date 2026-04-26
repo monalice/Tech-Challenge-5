@@ -30,7 +30,7 @@ jobs:
         run: ruff check .
 
       - name: Type check (mypy)
-        run: mypy src monitoring
+        run: python -m mypy src monitoring --explicit-package-bases
 
       - name: Security scan (bandit)
         run: bandit -r src monitoring -ll
