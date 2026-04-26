@@ -116,6 +116,74 @@ def configure_mlflow():
     mlflow.set_experiment(experiment_name=MLFLOW_EXPERIMENT_NAME)
 
 
+MODEL_NAME = "btc-lstm-hourly"
+CHAMPION_METRIC = "mae_price"  # métrica usada na comparação champion-challenger
+MIN_IMPROVEMENT = 0.005  # melhoria mínima de 0,5 % para promover challenger
+
+
+def evaluate_champion_challenger(challenger_mae: float) -> bool:
+    """Compara challenger com champion. Retorna True se challenger deve ser promovido."""
+    client = mlflow.MlflowClient()
+    try:
+        production_versions = client.get_latest_versions(MODEL_NAME, stages=["Production"])
+        if not production_versions:
+            logger.info(
+                "Sem champion em Production. Challenger será promovido automaticamente."
+            )
+            return True
+
+        champion_version = production_versions[0]
+        champion_run = client.get_run(champion_version.run_id)
+        champion_mae = float(champion_run.data.metrics.get(CHAMPION_METRIC, float("inf")))
+
+        improvement = (champion_mae - challenger_mae) / champion_mae
+        logger.info(
+            "Champion MAE: %.4f | Challenger MAE: %.4f | Melhoria: %.2f%%",
+            champion_mae,
+            challenger_mae,
+            improvement * 100,
+        )
+        return improvement >= MIN_IMPROVEMENT
+
+    except Exception as exc:
+        logger.warning("Erro na avalia\u00e7\u00e3o champion-challenger: %s", exc)
+        return False
+
+
+def promote_to_production(registered_model_version: str) -> None:
+    """Promove a vers\u00e3o do challenger para Production e arquiva o champion anterior."""
+    client = mlflow.MlflowClient()
+    # Arquiva champion atual (se existir)
+    for mv in client.get_latest_versions(MODEL_NAME, stages=["Production"]):
+        client.transition_model_version_stage(
+            name=MODEL_NAME,
+            version=mv.version,
+            stage="Archived",
+        )
+        logger.info("Champion anterior arquivado (vers\u00e3o %s).", mv.version)
+
+    client.transition_model_version_stage(
+        name=MODEL_NAME,
+        version=registered_model_version,
+        stage="Production",
+    )
+    logger.info("Challenger promovido a Production (vers\u00e3o %s).", registered_model_version)
+
+
+def archive_challenger(registered_model_version: str) -> None:
+    """Arquiva o challenger que n\u00e3o superou o champion."""
+    client = mlflow.MlflowClient()
+    client.transition_model_version_stage(
+        name=MODEL_NAME,
+        version=registered_model_version,
+        stage="Staging",
+    )
+    logger.info(
+        "Champion mantido. Challenger arquivado como Staging (versão %s).",
+        registered_model_version,
+    )
+
+
 def log_training_artifacts(model, scaler_all, scaler_return, metadata):
     with tempfile.TemporaryDirectory(prefix="mlflow_artifacts_") as temp_dir:
         model_file = os.path.join(temp_dir, "lstm_btc_hourly.keras")
@@ -143,7 +211,7 @@ def log_training_artifacts(model, scaler_all, scaler_return, metadata):
         model_uri = f"runs:/{active_run.info.run_id}/model"
         registered_model = mlflow.register_model(
             model_uri=model_uri,
-            name="btc-lstm-hourly",
+            name=MODEL_NAME,
             tags={
                 "stage": "challenger",
                 "training_data_version": TAG_TRAINING_DATA_VERSION,
@@ -151,10 +219,11 @@ def log_training_artifacts(model, scaler_all, scaler_return, metadata):
             },
         )
         logger.info(
-            "Modelo registrado no Registry: %s versão %s",
+            "Modelo registrado no Registry: %s vers\u00e3o %s",
             registered_model.name,
             registered_model.version,
         )
+        return registered_model.version
 
 
 def normalize_download_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -716,8 +785,14 @@ def main():
             "beats_baseline": bool(beats_baseline),
         }
 
-        log_training_artifacts(model, scaler_all, scaler_return, metadata)
+        challenger_version = log_training_artifacts(model, scaler_all, scaler_return, metadata)
         logger.info("Artefatos registrados no MLflow (model/.keras, scalers/.gz e metadata).")
+
+        # 9. Champion-challenger: promover se melhoria >= 0,5 % no MAE
+        if evaluate_champion_challenger(challenger_mae=mae):
+            promote_to_production(challenger_version)
+        else:
+            archive_challenger(challenger_version)
 
         logger.info("\n%s", "=" * 40)
         logger.info("RELATORIO DE PERFORMANCE (%s - HORARIO)", TICKER)
