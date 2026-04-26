@@ -66,7 +66,9 @@ No fluxo de chat:
 
 ## Observabilidade
 
-Métricas expostas por `/metrics`:
+### Métricas operacionais (`/metrics`)
+
+Métricas expostas por `/metrics` (Prometheus):
 
 - total de chamadas ao `/predict`
 - latência de inferência
@@ -75,7 +77,23 @@ Métricas expostas por `/metrics`:
 - uso de CPU
 - uso de memória
 
-Logs e histórico:
+### Telemetria de Qualidade LLM — Langfuse
+
+O agente ReAct é instrumentado com **[Langfuse](https://langfuse.com)** para rastreamento de qualidade das interações LLM. Quando as variáveis `LANGFUSE_PUBLIC_KEY` e `LANGFUSE_SECRET_KEY` estão configuradas, cada chamada ao agente produz um trace com:
+
+| Métrica | Descrição |
+|---|---|
+| **Faithfulness** | Grau em que a resposta é fundamentada nas observações das ferramentas |
+| **Relevância** | Alinhamento da resposta com a pergunta do usuário |
+| **Latência** | Tempo total de execução do agente e tempo por LLM call |
+| **Tokens** | Contagem de tokens de entrada e saída por chamada |
+| **Ferramentas invocadas** | Sequência de tools utilizadas (LSTM, cotação, RAG) |
+
+A telemetria é **opcional e não bloqueante**: se as credenciais não estiverem definidas ou o serviço estiver indisponível, o agente continua operando normalmente.
+
+Configuração: ver `.env.example` para as variáveis `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` e `LANGFUSE_HOST`.
+
+### Logs e histórico
 
 - logs estruturados por componente
 - histórico recente de previsões via `/predictions/history`

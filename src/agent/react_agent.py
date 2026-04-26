@@ -29,6 +29,13 @@ from langchain.prompts import PromptTemplate
 from langchain.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+try:
+    from langfuse.callback import CallbackHandler as LangfuseHandler
+
+    _LANGFUSE_AVAILABLE = True
+except ImportError:
+    _LANGFUSE_AVAILABLE = False
+
 from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
 
 logger = logging.getLogger("stockcast.agent")
@@ -513,9 +520,28 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
 
     agent = create_react_agent(llm=llm, tools=tools, prompt=_REACT_PROMPT)
 
+    # Langfuse: telemetria de qualidade LLM (faithfulness, relevância, latência).
+    # Só é ativado quando LANGFUSE_PUBLIC_KEY e LANGFUSE_SECRET_KEY estão definidas.
+    callbacks: list[Any] = []
+    pub_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    sec_key = os.getenv("LANGFUSE_SECRET_KEY")
+    if _LANGFUSE_AVAILABLE and pub_key and sec_key:
+        try:
+            lf_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+            langfuse_handler = LangfuseHandler(  # type: ignore[reportPossiblyUnbound]
+                public_key=pub_key,
+                secret_key=sec_key,
+                host=lf_host,
+            )
+            callbacks.append(langfuse_handler)
+            logger.info("[agent] Langfuse callback ativado (host=%s)", lf_host)
+        except Exception as exc:
+            logger.warning("[agent] Falha ao inicializar Langfuse: %s", exc)
+
     return AgentExecutor(
         agent=agent,
         tools=tools,
+        callbacks=callbacks if callbacks else None,
         verbose=True,
         handle_parsing_errors=True,
         max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "6")),
