@@ -14,11 +14,11 @@ Uso:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -28,8 +28,8 @@ from langchain.agents import AgentExecutor, create_react_agent
 from langchain.prompts import PromptTemplate
 from langchain.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
+
 from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
-from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("stockcast.agent")
 
@@ -463,7 +463,7 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
     """
     google_api_key = os.getenv("GOOGLE_API_KEY")
     if not google_api_key:
-        raise EnvironmentError("A variável GOOGLE_API_KEY não está definida.")
+        raise OSError("A variável GOOGLE_API_KEY não está definida.")
 
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0)
 

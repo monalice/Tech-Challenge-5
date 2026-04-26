@@ -37,7 +37,10 @@ class InputGuardrail:
 
     def validate(self, text: str) -> InputValidationResult:
         if not isinstance(text, str) or not text.strip():
-            return InputValidationResult(allowed=False, reason="A mensagem deve ser um texto não vazio.")
+            return InputValidationResult(
+                allowed=False,
+                reason="A mensagem deve ser um texto não vazio.",
+            )
 
         if len(text) > self.max_input_chars:
             return InputValidationResult(

@@ -1,5 +1,4 @@
 import asyncio
-import json
 from collections import deque
 
 import pandas as pd
@@ -10,7 +9,13 @@ from monitoring import drift_detection as dd
 def _prediction_log(periods: int = 20):
     index = pd.date_range("2026-01-01", periods=periods, freq="h", tz="UTC")
     return deque(
-        [{"forecast_for_utc": ts.isoformat(), "predicted_price_usd": float(100 + i)} for i, ts in enumerate(index)],
+        [
+            {
+                "forecast_for_utc": ts.isoformat(),
+                "predicted_price_usd": float(100 + i),
+            }
+            for i, ts in enumerate(index)
+        ],
         maxlen=100,
     )
 
@@ -138,7 +143,11 @@ def test_detect_data_drift_logs_error_for_psi_above_02(monkeypatch, caplog):
 
 
 def test_detect_data_drift_uses_fallback_when_evidently_errors(monkeypatch, caplog):
-    monkeypatch.setattr(dd, "_build_report_with_psi", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        dd,
+        "_build_report_with_psi",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
 
     caplog.set_level("WARNING")
     result = asyncio.run(

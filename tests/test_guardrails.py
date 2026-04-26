@@ -42,8 +42,14 @@ def test_output_guardrail_regex_fallback_on_engine_error(monkeypatch):
 def test_output_guardrail_anonymizer_then_regex(monkeypatch):
     guard = OutputGuardrail()
 
-    fake_analyzer = SimpleNamespace(analyze=lambda **kwargs: [SimpleNamespace(entity_type="EMAIL_ADDRESS")])
-    fake_anonymizer = SimpleNamespace(anonymize=lambda **kwargs: SimpleNamespace(text="mail <EMAIL_ADDRESS> cpf 123.456.789-09"))
+    fake_analyzer = SimpleNamespace(
+        analyze=lambda **kwargs: [SimpleNamespace(entity_type="EMAIL_ADDRESS")]
+    )
+    fake_anonymizer = SimpleNamespace(
+        anonymize=lambda **kwargs: SimpleNamespace(
+            text="mail <EMAIL_ADDRESS> cpf 123.456.789-09"
+        )
+    )
 
     guard._analyzer = fake_analyzer
     guard._anonymizer = fake_anonymizer
@@ -59,7 +65,9 @@ def test_output_guardrail_no_entities_still_masks_by_regex(monkeypatch):
 
     fake_analyzer = SimpleNamespace(analyze=lambda **kwargs: [])
     guard._analyzer = fake_analyzer
-    guard._anonymizer = SimpleNamespace(anonymize=lambda **kwargs: SimpleNamespace(text=kwargs["text"]))
+    guard._anonymizer = SimpleNamespace(
+        anonymize=lambda **kwargs: SimpleNamespace(text=kwargs["text"])
+    )
     monkeypatch.setattr(guard, "_ensure_engines", lambda: None)
 
     sanitized = guard.sanitize("Contato: joao@empresa.com")

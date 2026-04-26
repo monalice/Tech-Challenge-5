@@ -1,24 +1,34 @@
-import os
-import time
+import collections
 import json
 import logging
-import collections
-import psutil
+import os
+import time
+from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
+
 import joblib
-import uvicorn
 import numpy as np
+import pandas as pd
+import psutil
+import requests
+
 # IMPORTANTE (Windows): tensorflow e yfinance devem ser importados antes de pandas
 # para evitar conflito de DLL que causa crash (exit code -1073741819)
 import tensorflow as tf
+import uvicorn
 import yfinance as yf
-import pandas as pd
-import requests
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field, ConfigDict
-from contextlib import asynccontextmanager
-from zoneinfo import ZoneInfo
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
+from pydantic import BaseModel, ConfigDict, Field
+
 from monitoring.drift_detection import detect_data_drift
 from src.security.guardrails import InputGuardrail, OutputGuardrail
 
@@ -463,7 +473,7 @@ async def lifespan(app: FastAPI):
             ml_artifacts['scaler_return'] = None
 
         try:
-            with open(MODEL_META_PATH, "r", encoding="utf-8") as meta_file:
+            with open(MODEL_META_PATH, encoding="utf-8") as meta_file:
                 ml_artifacts['metadata'] = json.load(meta_file)
         except FileNotFoundError:
             ml_artifacts['metadata'] = {
@@ -635,7 +645,10 @@ def predict_next_hour(
             if not {'High', 'Low', 'Volume'}.issubset(df.columns):
                 raise HTTPException(
                     status_code=503,
-                    detail="Dados de mercado sem colunas OHLCV necessárias para inferência multi-feature."
+                    detail=(
+                        "Dados de mercado sem colunas OHLCV necessárias "
+                        "para inferência multi-feature."
+                    )
                 )
             ohlcv = df[['Close', 'High', 'Low', 'Volume']].dropna()
             if not request.use_partial_candle:
@@ -680,7 +693,10 @@ def predict_next_hour(
                 try:
                     min_val = float(scaler.data_min_[0])
                     max_val = float(scaler.data_max_[0])
-                    predicted_log_return = float(predicted_scaled.reshape(-1)[0]) * (max_val - min_val) + min_val
+                    predicted_log_return = (
+                        float(predicted_scaled.reshape(-1)[0]) * (max_val - min_val)
+                        + min_val
+                    )
                 except (AttributeError, IndexError):
                     predicted_log_return = float(predicted_scaled.reshape(-1)[0])
 
@@ -698,7 +714,10 @@ def predict_next_hour(
                     detail=f"Dados insuficientes para gerar janela de retorno de {LOOKBACK}h."
                 )
 
-            last_returns = np.asarray(return_series.to_numpy()[-LOOKBACK:], dtype=float).reshape(-1, 1)
+            last_returns = np.asarray(
+                return_series.to_numpy()[-LOOKBACK:],
+                dtype=float,
+            ).reshape(-1, 1)
             scaled_input = scaler.transform(last_returns)
             X_input = scaled_input.reshape(1, LOOKBACK, 1)
 
@@ -712,7 +731,10 @@ def predict_next_hour(
         forecast_close_ts = forecast_for_ts + pd.Timedelta(hours=1) - pd.Timedelta(seconds=1)
         predicted_price = last_close * np.exp(predicted_log_return)
 
-        estimated_error_pct, confidence_interval_95 = estimate_uncertainty(float(predicted_price), metadata)
+        estimated_error_pct, confidence_interval_95 = estimate_uncertainty(
+            float(predicted_price),
+            metadata,
+        )
 
         proc_time = (time.perf_counter() - start_proc) * 1000
         METRIC_PREDICT_LATENCY.observe(proc_time / 1000)
@@ -722,7 +744,11 @@ def predict_next_hour(
         prediction_log.append({
             "requested_at_utc": pd.Timestamp.utcnow().isoformat(),
             "ticker": ticker,
-            "input_mode": "include_partial_candle" if request.use_partial_candle else "closed_candles_only",
+            "input_mode": (
+                "include_partial_candle"
+                if request.use_partial_candle
+                else "closed_candles_only"
+            ),
             "last_input_candle_utc": timestamp_to_utc_iso(last_observed_ts),
             "forecast_for_utc": timestamp_to_utc_iso(forecast_for_ts),
             "predicted_price_usd": round(float(predicted_price), 2),
@@ -737,7 +763,11 @@ def predict_next_hour(
         return {
             "ticker": ticker,
             "prediction_type": "Next Hour Close",
-            "input_mode": "include_partial_candle" if request.use_partial_candle else "closed_candles_only",
+            "input_mode": (
+                "include_partial_candle"
+                if request.use_partial_candle
+                else "closed_candles_only"
+            ),
             "last_input_candle_utc": timestamp_to_utc_iso(last_observed_ts),
             "last_input_candle_brt": timestamp_to_brt_iso(last_observed_ts),
             "predicted_price_usd": round(float(predicted_price), 2),
@@ -746,7 +776,11 @@ def predict_next_hour(
             "forecast_close_utc": timestamp_to_utc_iso(forecast_close_ts),
             "forecast_close_brt": timestamp_to_brt_iso(forecast_close_ts),
             "confidence_interval_95_usd": confidence_interval_95,
-            "estimated_error_pct": None if estimated_error_pct is None else round(float(estimated_error_pct), 2),
+            "estimated_error_pct": (
+                None
+                if estimated_error_pct is None
+                else round(float(estimated_error_pct), 2)
+            ),
             "data_source": data_source,
             "processing_time_ms": round(proc_time, 2)
         }
@@ -757,7 +791,7 @@ def predict_next_hour(
     except Exception as e:
         METRIC_PREDICT_REQUESTS.labels(ticker=ticker, status="error_internal").inc()
         logger.error("Erro interno em /predict: %s: %s", type(e).__name__, e)
-        raise HTTPException(status_code=500, detail="Falha interna ao gerar previsão")
+        raise HTTPException(status_code=500, detail="Falha interna ao gerar previsão") from None
 
 @app.post(
     "/chat",
@@ -781,7 +815,7 @@ def chat(request: ChatRequest):
 
     try:
         agent_executor = build_agent(ml_artifacts)
-    except EnvironmentError as exc:
+    except OSError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     try:

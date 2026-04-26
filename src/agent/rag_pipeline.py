@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Literal
 
 from langchain_core.documents import Document
 from langchain_google_genai import GoogleGenerativeAIEmbeddings

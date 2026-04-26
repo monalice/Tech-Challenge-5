@@ -1,24 +1,26 @@
-import os
 import json
-import time
-import tempfile
 import logging
+import os
 import subprocess
+import tempfile
+import time
+
 import joblib
-import numpy as np
-import requests
 import mlflow
+import numpy as np
+import pandas as pd
+import requests
+
 # IMPORTANTE (Windows): tensorflow e yfinance devem ser importados antes de pandas
 # para evitar conflito de DLL que causa crash (exit code -1073741819)
 import tensorflow as tf
 import yfinance as yf
-import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import TimeSeriesSplit
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
+from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.layers import LSTM, Bidirectional, Dense, Dropout
+from tensorflow.keras.models import Sequential
 from tensorflow.keras.optimizers import Adam
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -84,7 +86,7 @@ def ensure_directories():
 def configure_mlflow():
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     if not tracking_uri:
-        raise EnvironmentError(
+        raise OSError(
             "A variável de ambiente MLFLOW_TRACKING_URI não foi definida. "
             "Configure-a para o PostgreSQL (AWS RDS) do MLflow Tracking Server."
         )
@@ -165,7 +167,10 @@ def save_cached_data(data: pd.DataFrame):
         logger.warning("Nao foi possivel salvar cache local em '%s': %s", CACHE_DATA_PATH, error)
 
 def download_from_binance() -> pd.DataFrame:
-    """Baixa dados horários do BTC via Binance REST API pública, com paginação para cobrir PERIOD completo."""
+    """Baixa dados horários do BTC via Binance REST API pública.
+
+    Usa paginação para cobrir todo o período definido em PERIOD.
+    """
     logger.info("Tentando fonte alternativa: Binance REST API...")
     interval_ms = 60 * 60 * 1000  # 1 hora em ms
     days = int(PERIOD.replace("d", ""))
@@ -292,7 +297,12 @@ def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     rsi = 100 - (100 / (1 + rs))
     return rsi.fillna(50.0)
 
-def compute_macd_signal(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.Series:
+def compute_macd_signal(
+    series: pd.Series,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> pd.Series:
     """MACD Signal line normalizado pelo preço (adimensional)."""
     ema_fast = series.ewm(span=fast, adjust=False).mean()
     ema_slow = series.ewm(span=slow, adjust=False).mean()
@@ -502,7 +512,9 @@ def main():
 
         if len(train_features) <= LOOKBACK:
             raise ValueError(
-                f"Dados de treino insuficientes. Necessário mais que {LOOKBACK} registros, recebido: {len(train_features)}."
+                "Dados de treino insuficientes. "
+                f"Necessário mais que {LOOKBACK} registros, "
+                f"recebido: {len(train_features)}."
             )
         if len(test_features) == 0:
             raise ValueError("Conjunto de teste vazio. Ajuste TEST_SIZE_PCT.")
@@ -529,7 +541,10 @@ def main():
 
         test_start_idx_in_windows = split_idx - LOOKBACK
         if test_start_idx_in_windows < 0:
-            raise ValueError("Split inválido para LOOKBACK atual. Ajuste TEST_SIZE_PCT ou LOOKBACK.")
+            raise ValueError(
+                "Split inválido para LOOKBACK atual. "
+                "Ajuste TEST_SIZE_PCT ou LOOKBACK."
+            )
 
         X_test = X_all[test_start_idx_in_windows:]
         y_test = y_all[test_start_idx_in_windows:]

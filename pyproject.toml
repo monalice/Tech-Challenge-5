@@ -12,7 +12,7 @@ exclude = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "C4", "N"]
-ignore = []
+ignore = ["N803", "N806"]
 
 [tool.ruff.format]
 quote-style = "double"

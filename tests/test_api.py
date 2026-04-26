@@ -1,8 +1,8 @@
-from src import app as app_module
-
 import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
+
+from src import app as app_module
 
 
 class _DummyModel:
@@ -29,7 +29,11 @@ def _mock_market_df() -> pd.DataFrame:
 def test_live_returns_200(monkeypatch):
     monkeypatch.setattr(app_module, "load_trained_model", lambda _: _DummyModel())
     monkeypatch.setattr(app_module.joblib, "load", lambda _: _DummyScaler())
-    monkeypatch.setattr(app_module, "download_with_retry", lambda ticker: (_mock_market_df(), "test"))
+    monkeypatch.setattr(
+        app_module,
+        "download_with_retry",
+        lambda ticker: (_mock_market_df(), "test"),
+    )
 
     with TestClient(app_module.app) as client:
         response = client.get("/live")
@@ -43,7 +47,11 @@ def test_live_returns_200(monkeypatch):
 def test_health_returns_200(monkeypatch):
     monkeypatch.setattr(app_module, "load_trained_model", lambda _: _DummyModel())
     monkeypatch.setattr(app_module.joblib, "load", lambda _: _DummyScaler())
-    monkeypatch.setattr(app_module, "download_with_retry", lambda ticker: (_mock_market_df(), "test"))
+    monkeypatch.setattr(
+        app_module,
+        "download_with_retry",
+        lambda ticker: (_mock_market_df(), "test"),
+    )
 
     with TestClient(app_module.app) as client:
         response = client.get("/health")

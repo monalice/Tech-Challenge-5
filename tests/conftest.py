@@ -1,8 +1,8 @@
-import tensorflow as tf  # noqa: F401
-import yfinance as yf  # noqa: F401
 import numpy as np
 import pandas as pd
 import pytest
+import tensorflow as tf  # noqa: F401
+import yfinance as yf  # noqa: F401
 
 
 @pytest.fixture

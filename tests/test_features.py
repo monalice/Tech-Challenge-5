@@ -1,9 +1,9 @@
-from src import app
-
-import pandera as pa
 import numpy as np
 import pandas as pd
+import pandera as pa
 from pandera import Check
+
+from src import app
 
 
 def _raw_schema() -> pa.DataFrameSchema:
