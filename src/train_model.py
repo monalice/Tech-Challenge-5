@@ -7,6 +7,7 @@ import time
 
 import joblib
 import mlflow
+import mlflow.keras
 import numpy as np
 import pandas as pd
 import requests
@@ -93,6 +94,12 @@ def configure_mlflow():
             "Configure-a para o PostgreSQL (AWS RDS) do MLflow Tracking Server."
         )
 
+    if tracking_uri.startswith("file://"):
+        raise OSError(
+            "MLFLOW_TRACKING_URI não pode usar file:// para Model Registry. "
+            "Use o endpoint HTTP/HTTPS do MLflow Tracking Server com backend SQL (RDS)."
+        )
+
     mlflow.set_tracking_uri(tracking_uri)
 
     client = mlflow.MlflowClient()
@@ -123,10 +130,31 @@ def log_training_artifacts(model, scaler_all, scaler_return, metadata):
         with open(metadata_file, "w", encoding="utf-8") as meta_file:
             json.dump(metadata, meta_file, indent=2, ensure_ascii=False)
 
+        mlflow.keras.log_model(model, artifact_path="model")
         mlflow.log_artifact(model_file, artifact_path="model")
         mlflow.log_artifact(scaler_file, artifact_path="scalers")
         mlflow.log_artifact(scaler_return_file, artifact_path="scalers")
         mlflow.log_artifact(metadata_file, artifact_path="metadata")
+
+        active_run = mlflow.active_run()
+        if active_run is None:
+            raise RuntimeError("Nenhuma run ativa encontrada para registrar o modelo no Registry.")
+
+        model_uri = f"runs:/{active_run.info.run_id}/model"
+        registered_model = mlflow.register_model(
+            model_uri=model_uri,
+            name="btc-lstm-hourly",
+            tags={
+                "stage": "challenger",
+                "training_data_version": TAG_TRAINING_DATA_VERSION,
+                "git_sha": get_git_sha(),
+            },
+        )
+        logger.info(
+            "Modelo registrado no Registry: %s versão %s",
+            registered_model.name,
+            registered_model.version,
+        )
 
 
 def normalize_download_dataframe(df: pd.DataFrame) -> pd.DataFrame:

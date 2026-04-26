@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 
 import joblib
+import mlflow
 import numpy as np
 import pandas as pd
 import psutil
@@ -661,6 +662,16 @@ async def check_drift(
         download_fn=download_with_retry,
         prediction_log=prediction_log,
     )
+
+    if result.get("status") == "ok" and "psi" in result:
+        try:
+            with mlflow.start_run(run_name="drift_check", nested=True):
+                mlflow.log_metric("psi_btc_usd", float(result["psi"]))
+                mlflow.set_tag("drift_status", result["status"])
+                mlflow.set_tag("rows_compared", str(result.get("rows_compared", 0)))
+        except Exception as drift_log_exc:
+            logger.warning("Falha ao logar drift no MLflow: %s", drift_log_exc)
+
     return result
 
 
