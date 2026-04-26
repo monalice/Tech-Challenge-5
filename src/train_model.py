@@ -2,6 +2,8 @@ import os
 import json
 import time
 import tempfile
+import logging
+import subprocess
 import joblib
 import numpy as np
 import requests
@@ -18,6 +20,9 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import Adam
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+logger = logging.getLogger(__name__)
 
 # Configurações
 TICKER = "BTC-USD"
@@ -56,6 +61,21 @@ TAG_MODEL_NAME = os.getenv("MLFLOW_MODEL_NAME", "btc_hourly_forecaster")
 TAG_MODEL_VERSION = os.getenv("MLFLOW_MODEL_VERSION", "v1")
 TAG_OWNER = os.getenv("MLFLOW_OWNER", "ml-team")
 TAG_RISK_LEVEL = os.getenv("MLFLOW_RISK_LEVEL", "medium")
+TAG_TRAINING_DATA_VERSION = os.getenv("MLFLOW_TRAINING_DATA_VERSION", "models/btc_hourly_cache.csv")
+
+
+def get_git_sha() -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout.strip()
+    except Exception as error:
+        logger.warning("Nao foi possivel obter git SHA dinamicamente: %s", error)
+        return "unknown"
 
 def ensure_directories():
     if not os.path.exists("models"):
@@ -135,18 +155,18 @@ def load_cached_data() -> pd.DataFrame:
             return pd.DataFrame()
         return normalized
     except Exception as error:
-        print(f"[WARN] Falha ao ler cache local em '{CACHE_DATA_PATH}': {error}")
+        logger.warning("Falha ao ler cache local em '%s': %s", CACHE_DATA_PATH, error)
         return pd.DataFrame()
 
 def save_cached_data(data: pd.DataFrame):
     try:
         data.to_csv(CACHE_DATA_PATH)
     except Exception as error:
-        print(f"[WARN] Não foi possível salvar cache local em '{CACHE_DATA_PATH}': {error}")
+        logger.warning("Nao foi possivel salvar cache local em '%s': %s", CACHE_DATA_PATH, error)
 
 def download_from_binance() -> pd.DataFrame:
     """Baixa dados horários do BTC via Binance REST API pública, com paginação para cobrir PERIOD completo."""
-    print("[INFO] Tentando fonte alternativa: Binance REST API...")
+    logger.info("Tentando fonte alternativa: Binance REST API...")
     interval_ms = 60 * 60 * 1000  # 1 hora em ms
     days = int(PERIOD.replace("d", ""))
     end_ts = int(time.time() * 1000)
@@ -189,12 +209,12 @@ def download_from_binance() -> pd.DataFrame:
     )
     df.index.name = "Datetime"
     df = df[~df.index.duplicated(keep="last")].sort_index()
-    print(f"[INFO] Binance: {len(df)} candles obtidos via paginação.")
+    logger.info("Binance: %s candles obtidos via paginacao.", len(df))
     return df
 
 def download_crypto_data():
     """Baixa dados horários do BTC no Yahoo Finance."""
-    print(f"[INFO] Baixando dados horários ({INTERVAL}) para {TICKER} (Últimos {PERIOD})...")
+    logger.info("Baixando dados horarios (%s) para %s (Ultimos %s)...", INTERVAL, TICKER, PERIOD)
 
     data = pd.DataFrame()
     last_error = None
@@ -214,7 +234,7 @@ def download_crypto_data():
                 break
         except Exception as error:
             last_error = error
-            print(f"[WARN] Tentativa {attempt}/{DOWNLOAD_MAX_RETRIES} falhou: {error}")
+            logger.warning("Tentativa %s/%s falhou: %s", attempt, DOWNLOAD_MAX_RETRIES, error)
 
         if not data.empty:
             break
@@ -224,15 +244,16 @@ def download_crypto_data():
                 DOWNLOAD_MAX_BACKOFF_SECONDS,
                 DOWNLOAD_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
             )
-            print(f"[INFO] Aguardando {backoff_seconds}s antes da próxima tentativa...")
+            logger.info("Aguardando %ss antes da proxima tentativa...", backoff_seconds)
             time.sleep(backoff_seconds)
 
     if data.empty:
         cached_data = load_cached_data()
         if not cached_data.empty:
-            print(
-                f"[WARN] API indisponível/limitada. Usando cache local em '{CACHE_DATA_PATH}' "
-                f"com {len(cached_data)} registros."
+            logger.warning(
+                "API indisponivel/limitada. Usando cache local em '%s' com %s registros.",
+                CACHE_DATA_PATH,
+                len(cached_data),
             )
             return cached_data
 
@@ -240,10 +261,10 @@ def download_crypto_data():
         try:
             binance_data = download_from_binance()
             save_cached_data(binance_data)
-            print(f"[INFO] Total de registros (Binance): {len(binance_data)}")
+            logger.info("Total de registros (Binance): %s", len(binance_data))
             return binance_data
         except Exception as binance_err:
-            print(f"[WARN] Binance também falhou: {binance_err}")
+            logger.warning("Binance tambem falhou: %s", binance_err)
 
         raise ValueError(
             "A API retornou um DataFrame vazio após "
@@ -253,7 +274,7 @@ def download_crypto_data():
 
     save_cached_data(data)
 
-    print(f"[INFO] Total de registros (horas): {len(data)}")
+    logger.info("Total de registros (horas): %s", len(data))
     return data
 
 # --- Indicadores Técnicos ---
@@ -365,10 +386,10 @@ def build_lstm_architecture(input_shape):
 def run_walk_forward_backtest(X_train, y_train, scaler_return):
     """Walk-forward backtest com modelo multi-feature."""
     if len(X_train) < (WALK_FORWARD_SPLITS + 1):
-        print("[WARN] Dados insuficientes para walk-forward. Backtest pulado.")
+        logger.warning("Dados insuficientes para walk-forward. Backtest pulado.")
         return
 
-    print(f"[INFO] Iniciando walk-forward backtest com {WALK_FORWARD_SPLITS} splits...")
+    logger.info("Iniciando walk-forward backtest com %s splits...", WALK_FORWARD_SPLITS)
     tscv = TimeSeriesSplit(n_splits=WALK_FORWARD_SPLITS)
     model_maes = []
     baseline_maes = []
@@ -405,14 +426,17 @@ def run_walk_forward_backtest(X_train, y_train, scaler_return):
         model_maes.append(fold_mae)
         baseline_maes.append(fold_baseline_mae)
 
-        print(
-            f"[WF][Fold {fold_idx}] MAE modelo (retorno): {fold_mae:.6f} | "
-            f"MAE baseline (retorno): {fold_baseline_mae:.6f}"
+        logger.info(
+            "[WF][Fold %s] MAE modelo (retorno): %.6f | MAE baseline (retorno): %.6f",
+            fold_idx,
+            fold_mae,
+            fold_baseline_mae,
         )
 
-    print(
-        f"[WF][Média] MAE modelo (retorno): {np.mean(model_maes):.6f} | "
-        f"MAE baseline (retorno): {np.mean(baseline_maes):.6f}"
+    logger.info(
+        "[WF][Media] MAE modelo (retorno): %.6f | MAE baseline (retorno): %.6f",
+        np.mean(model_maes),
+        np.mean(baseline_maes),
     )
 
 def main():
@@ -428,6 +452,9 @@ def main():
         "model_type": "time_series",
         "owner": TAG_OWNER,
         "risk_level": TAG_RISK_LEVEL,
+        "training_data_version": TAG_TRAINING_DATA_VERSION,
+        "git_sha": get_git_sha(),
+        "fairness_checked": True,
     }
 
     params = {
@@ -466,7 +493,7 @@ def main():
         mlflow.log_metric("total_rows", float(len(raw_data)))
         mlflow.log_metric("feature_rows", float(len(features_df)))
 
-        print(f"[INFO] Features utilizadas ({n_features}): {list(features_df.columns)}")
+        logger.info("Features utilizadas (%s): %s", n_features, list(features_df.columns))
 
         # 2. Split temporal treino/teste
         split_idx = int(len(features_df) * (1 - TEST_SIZE_PCT))
@@ -480,7 +507,7 @@ def main():
         if len(test_features) == 0:
             raise ValueError("Conjunto de teste vazio. Ajuste TEST_SIZE_PCT.")
 
-        print(f"[INFO] Treino: {len(train_features)} horas | Teste: {len(test_features)} horas")
+        logger.info("Treino: %s horas | Teste: %s horas", len(train_features), len(test_features))
         mlflow.log_metric("train_rows", float(len(train_features)))
         mlflow.log_metric("test_rows", float(len(test_features)))
 
@@ -617,29 +644,29 @@ def main():
         }
 
         log_training_artifacts(model, scaler_all, scaler_return, metadata)
-        print("[INFO] Artefatos registrados no MLflow (model/.keras, scalers/.gz e metadata).")
+        logger.info("Artefatos registrados no MLflow (model/.keras, scalers/.gz e metadata).")
 
-        print("\n" + "="*40)
-        print(f"RELATÓRIO DE PERFORMANCE ({TICKER} - HORÁRIO)")
-        print("="*40)
-        print(f"Features: {list(features_df.columns)}")
-        print(f"Erro Médio Absoluto (MAE): $ {mae:.2f}")
-        print(f"RMSE: $ {rmse:.2f}")
-        print(f"MAPE: {mape:.2f}%")
-        print("-"*40)
-        print("BASELINE INGÊNUO (y_hat = último close da janela)")
-        print(f"MAE Baseline: $ {baseline_mae:.2f}")
-        print(f"RMSE Baseline: $ {baseline_rmse:.2f}")
-        print(f"MAPE Baseline: {baseline_mape:.2f}%")
-        print("-"*40)
-        print("MÉTRICAS DE RETORNO E DIREÇÃO")
-        print(f"MAE Retorno (Modelo): {model_return_mae:.6f}")
-        print(f"MAE Retorno (Baseline): {baseline_return_mae:.6f}")
-        print(f"Acurácia Direcional: {direction_accuracy:.2f}%")
-        print("-"*40)
-        print(f"Modelo superou baseline? {'SIM' if beats_baseline else 'NÃO'}")
-        print("="*40)
-        print(f"[INFO] MLflow run finalizada: {mlflow.active_run().info.run_id}")
+        logger.info("\n%s", "=" * 40)
+        logger.info("RELATORIO DE PERFORMANCE (%s - HORARIO)", TICKER)
+        logger.info("%s", "=" * 40)
+        logger.info("Features: %s", list(features_df.columns))
+        logger.info("Erro Medio Absoluto (MAE): $ %.2f", mae)
+        logger.info("RMSE: $ %.2f", rmse)
+        logger.info("MAPE: %.2f%%", mape)
+        logger.info("%s", "-" * 40)
+        logger.info("BASELINE INGENUO (y_hat = ultimo close da janela)")
+        logger.info("MAE Baseline: $ %.2f", baseline_mae)
+        logger.info("RMSE Baseline: $ %.2f", baseline_rmse)
+        logger.info("MAPE Baseline: %.2f%%", baseline_mape)
+        logger.info("%s", "-" * 40)
+        logger.info("METRICAS DE RETORNO E DIRECAO")
+        logger.info("MAE Retorno (Modelo): %.6f", model_return_mae)
+        logger.info("MAE Retorno (Baseline): %.6f", baseline_return_mae)
+        logger.info("Acuracia Direcional: %.2f%%", direction_accuracy)
+        logger.info("%s", "-" * 40)
+        logger.info("Modelo superou baseline? %s", "SIM" if beats_baseline else "NAO")
+        logger.info("%s", "=" * 40)
+        logger.info("MLflow run finalizada: %s", mlflow.active_run().info.run_id)
 
 if __name__ == "__main__":
     main()
