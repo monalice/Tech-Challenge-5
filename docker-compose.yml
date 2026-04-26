@@ -13,3 +13,38 @@ services:
       retries: 3
       start_period: 40s
     restart: unless-stopped
+    networks:
+      - tc5_network
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: tc5_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api
+    networks:
+      - tc5_network
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: tc5_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - tc5_network
+
+volumes:
+  grafana_data:
+
+networks:
+  tc5_network:

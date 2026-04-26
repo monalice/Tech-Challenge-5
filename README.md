@@ -129,17 +129,46 @@ O campo `data_source` nas respostas de `/predict` e `/health` indica qual fonte 
 
 ## Monitoramento com Prometheus + Grafana (MLOps)
 
-Para monitorar a API em produção, adicione o scrape do endpoint `/metrics` no seu `prometheus.yml`:
+O projeto inclui monitoramento operacional com Docker Compose para API + Prometheus + Grafana.
+
+### Subir stack de observabilidade
+
+```bash
+docker-compose up -d --build
+```
+
+Serviços esperados:
+
+- API: `http://localhost:8000`
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000` (user `admin`, senha `admin`)
+
+O scrape do Prometheus está em [monitoring/prometheus.yml](monitoring/prometheus.yml):
 
 ```yaml
 scrape_configs:
   - job_name: stockcast
     static_configs:
-      - targets: ["localhost:8000"]
+      - targets: ["api:8000"]
     metrics_path: /metrics
 ```
 
-Exemplo de dashboard Grafana: importe um dashboard genérico de FastAPI/Python e aponte para as métricas `stockcast_*`.
+### Configurar datasource no Grafana
+
+1. Acesse `http://localhost:3000`.
+2. Vá em `Connections` > `Data sources` > `Add data source`.
+3. Selecione `Prometheus`.
+4. Em `URL`, informe `http://prometheus:9090`.
+5. Clique em `Save & test`.
+
+### Importar dashboard FastAPI + Prometheus
+
+1. No Grafana, vá em `Dashboards` > `Import`.
+2. Informe o ID `14282` (Grafana.com).
+3. Selecione o datasource Prometheus criado.
+4. Conclua em `Import`.
+
+Depois disso, use as métricas `stockcast_*` para acompanhar latência, erros, uso de CPU/memória e volume de predições.
 
 ## Treinamento do modelo (com MLflow)
 
