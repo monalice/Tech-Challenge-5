@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Configurações
 TICKER = "BTC-USD"
-PERIOD = "730d"  
+PERIOD = "730d"
 INTERVAL = "1h"
 
 LOOKBACK = 60
@@ -49,7 +49,7 @@ CACHE_DATA_PATH = "models/btc_hourly_cache.csv"
 BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_SYMBOL = "BTCUSDT"
 BINANCE_TIMEOUT_SECONDS = 10
-BINANCE_KLINE_LIMIT = 1000   # máximo por request
+BINANCE_KLINE_LIMIT = 1000  # máximo por request
 
 MODEL_PATH = "models/lstm_btc_hourly.keras"
 SCALER_PATH = "models/scaler_btc.gz"
@@ -79,9 +79,11 @@ def get_git_sha() -> str:
         logger.warning("Nao foi possivel obter git SHA dinamicamente: %s", error)
         return "unknown"
 
+
 def ensure_directories():
     if not os.path.exists("models"):
         os.makedirs("models")
+
 
 def configure_mlflow():
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
@@ -106,6 +108,7 @@ def configure_mlflow():
 
     mlflow.set_experiment(experiment_name=MLFLOW_EXPERIMENT_NAME)
 
+
 def log_training_artifacts(model, scaler_all, scaler_return, metadata):
     with tempfile.TemporaryDirectory(prefix="mlflow_artifacts_") as temp_dir:
         model_file = os.path.join(temp_dir, "lstm_btc_hourly.keras")
@@ -125,6 +128,7 @@ def log_training_artifacts(model, scaler_all, scaler_return, metadata):
         mlflow.log_artifact(scaler_return_file, artifact_path="scalers")
         mlflow.log_artifact(metadata_file, artifact_path="metadata")
 
+
 def normalize_download_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -135,15 +139,16 @@ def normalize_download_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         except KeyError:
             df.columns = df.columns.get_level_values(0)
 
-    required_columns = ['Close', 'High', 'Low', 'Volume']
+    required_columns = ["Close", "High", "Low", "Volume"]
     missing_columns = [column for column in required_columns if column not in df.columns]
     if missing_columns:
         raise ValueError(f"Colunas ausentes na resposta da API: {missing_columns}")
 
     normalized = df[required_columns].copy().dropna()
-    normalized = normalized[~normalized.index.duplicated(keep='last')]
+    normalized = normalized[~normalized.index.duplicated(keep="last")]
     normalized = normalized.sort_index()
     return normalized
+
 
 def load_cached_data() -> pd.DataFrame:
     if not os.path.exists(CACHE_DATA_PATH):
@@ -160,11 +165,13 @@ def load_cached_data() -> pd.DataFrame:
         logger.warning("Falha ao ler cache local em '%s': %s", CACHE_DATA_PATH, error)
         return pd.DataFrame()
 
+
 def save_cached_data(data: pd.DataFrame):
     try:
         data.to_csv(CACHE_DATA_PATH)
     except Exception as error:
         logger.warning("Nao foi possivel salvar cache local em '%s': %s", CACHE_DATA_PATH, error)
+
 
 def download_from_binance() -> pd.DataFrame:
     """Baixa dados horários do BTC via Binance REST API pública.
@@ -217,6 +224,7 @@ def download_from_binance() -> pd.DataFrame:
     logger.info("Binance: %s candles obtidos via paginacao.", len(df))
     return df
 
+
 def download_crypto_data():
     """Baixa dados horários do BTC no Yahoo Finance."""
     logger.info("Baixando dados horarios (%s) para %s (Ultimos %s)...", INTERVAL, TICKER, PERIOD)
@@ -232,7 +240,7 @@ def download_crypto_data():
                 progress=False,
                 auto_adjust=False,
                 threads=False,
-                timeout=DOWNLOAD_TIMEOUT_SECONDS
+                timeout=DOWNLOAD_TIMEOUT_SECONDS,
             )
             data = normalize_download_dataframe(download_df)
             if not data.empty:
@@ -246,8 +254,7 @@ def download_crypto_data():
 
         if attempt < DOWNLOAD_MAX_RETRIES:
             backoff_seconds = min(
-                DOWNLOAD_MAX_BACKOFF_SECONDS,
-                DOWNLOAD_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                DOWNLOAD_MAX_BACKOFF_SECONDS, DOWNLOAD_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
             )
             logger.info("Aguardando %ss antes da proxima tentativa...", backoff_seconds)
             time.sleep(backoff_seconds)
@@ -282,7 +289,9 @@ def download_crypto_data():
     logger.info("Total de registros (horas): %s", len(data))
     return data
 
+
 # --- Indicadores Técnicos ---
+
 
 def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     """Relative Strength Index (RSI). Retorna valores brutos de 0 a 100.
@@ -296,6 +305,7 @@ def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
     return rsi.fillna(50.0)
+
 
 def compute_macd_signal(
     series: pd.Series,
@@ -312,6 +322,7 @@ def compute_macd_signal(
     normalized = (macd_line - signal_line) / series.replace(0, np.nan)
     return normalized.fillna(0.0)
 
+
 def compute_bollinger_pct_b(series: pd.Series, period: int = 20, num_std: float = 2.0) -> pd.Series:
     """Posição relativa dentro das Bandas de Bollinger (%B). 0=banda inferior, 1=banda superior."""
     sma = series.rolling(window=period).mean()
@@ -322,6 +333,7 @@ def compute_bollinger_pct_b(series: pd.Series, period: int = 20, num_std: float 
     pct_b = (series - lower) / band_width
     return pct_b.fillna(0.5).clip(0.0, 1.0)
 
+
 def compute_sma_ratio(series: pd.Series, short: int = 7, long: int = 21) -> pd.Series:
     """Razão entre SMA curta e SMA longa (momentum de tendência)."""
     sma_short = series.rolling(window=short).mean()
@@ -329,38 +341,44 @@ def compute_sma_ratio(series: pd.Series, short: int = 7, long: int = 21) -> pd.S
     ratio = (sma_short / sma_long.replace(0, np.nan)) - 1.0
     return ratio.fillna(0.0)
 
+
 def compute_volume_ratio(volume: pd.Series, period: int = 24) -> pd.Series:
     """Razão entre volume atual e média móvel de volume (normalizado)."""
     vol_sma = volume.rolling(window=period).mean()
     ratio = volume / vol_sma.replace(0, np.nan)
     return ratio.fillna(1.0).clip(0.0, 10.0)
 
+
 def build_feature_matrix(data: pd.DataFrame) -> pd.DataFrame:
     """Constrói matriz de features técnicas + log-return."""
-    close = data['Close']
-    volume = data['Volume']
+    close = data["Close"]
+    volume = data["Volume"]
 
     log_price = np.log(close)
     log_return = log_price.diff()
 
-    rsi = compute_rsi(close, 14) / 100.0          # normalizado [0, 1]
-    macd_sig = compute_macd_signal(close)           # adimensional
-    bb_pct = compute_bollinger_pct_b(close)         # [0, 1]
-    sma_ratio = compute_sma_ratio(close)            # pequeno valor em torno de 0
-    vol_ratio = compute_volume_ratio(volume)        # em torno de 1
+    rsi = compute_rsi(close, 14) / 100.0  # normalizado [0, 1]
+    macd_sig = compute_macd_signal(close)  # adimensional
+    bb_pct = compute_bollinger_pct_b(close)  # [0, 1]
+    sma_ratio = compute_sma_ratio(close)  # pequeno valor em torno de 0
+    vol_ratio = compute_volume_ratio(volume)  # em torno de 1
 
-    features = pd.DataFrame({
-        'log_return': log_return,
-        'rsi': rsi,
-        'macd_signal': macd_sig,
-        'bb_pct_b': bb_pct,
-        'sma_ratio': sma_ratio,
-        'vol_ratio': vol_ratio,
-    }, index=data.index)
+    features = pd.DataFrame(
+        {
+            "log_return": log_return,
+            "rsi": rsi,
+            "macd_signal": macd_sig,
+            "bb_pct_b": bb_pct,
+            "sma_ratio": sma_ratio,
+            "vol_ratio": vol_ratio,
+        },
+        index=data.index,
+    )
 
     # Remover linhas com NaN (janelas iniciais dos indicadores)
     features = features.dropna()
     return features
+
 
 def create_sliding_window_multifeature(dataset: np.ndarray, look_back: int = 60):
     """Cria janelas deslizantes para entrada multi-feature.
@@ -370,28 +388,33 @@ def create_sliding_window_multifeature(dataset: np.ndarray, look_back: int = 60)
     """
     X, y = [], []
     for i in range(look_back, len(dataset)):
-        X.append(dataset[i - look_back:i, :])   # janela completa com todas as features
-        y.append(dataset[i, 0])                  # target: log_return (índice 0)
+        X.append(dataset[i - look_back : i, :])  # janela completa com todas as features
+        y.append(dataset[i, 0])  # target: log_return (índice 0)
     return np.array(X), np.array(y)
+
 
 def safe_mape(y_true, y_pred, eps=1e-8):
     denominator = np.maximum(np.abs(y_true), eps)
     return np.mean(np.abs((y_true - y_pred) / denominator)) * 100
 
+
 def build_lstm_architecture(input_shape):
     """Modelo LSTM bidirecional com múltiplas features para melhor acurácia direcional."""
-    model = Sequential([
-        Bidirectional(LSTM(units=64, return_sequences=True), input_shape=input_shape),
-        Dropout(0.2),
-        LSTM(units=48, return_sequences=True),
-        Dropout(0.2),
-        LSTM(units=32, return_sequences=False),
-        Dropout(0.2),
-        Dense(units=16, activation='relu'),
-        Dense(units=1)
-    ])
-    model.compile(optimizer=Adam(learning_rate=1e-3), loss='mean_squared_error')
+    model = Sequential(
+        [
+            Bidirectional(LSTM(units=64, return_sequences=True), input_shape=input_shape),
+            Dropout(0.2),
+            LSTM(units=48, return_sequences=True),
+            Dropout(0.2),
+            LSTM(units=32, return_sequences=False),
+            Dropout(0.2),
+            Dense(units=16, activation="relu"),
+            Dense(units=1),
+        ]
+    )
+    model.compile(optimizer=Adam(learning_rate=1e-3), loss="mean_squared_error")
     return model
+
 
 def run_walk_forward_backtest(X_train, y_train, scaler_return):
     """Walk-forward backtest com modelo multi-feature."""
@@ -409,15 +432,16 @@ def run_walk_forward_backtest(X_train, y_train, scaler_return):
         X_val_fold, y_val_fold = X_train[val_idx], y_train[val_idx]
 
         fold_model = build_lstm_architecture((X_train.shape[1], X_train.shape[2]))
-        fold_early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+        fold_early_stop = EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
 
         fold_model.fit(
-            X_tr, y_tr,
+            X_tr,
+            y_tr,
             batch_size=BATCH_SIZE,
             epochs=WALK_FORWARD_EPOCHS,
             validation_data=(X_val_fold, y_val_fold),
             callbacks=[fold_early_stop],
-            verbose=0
+            verbose=0,
         )
 
         y_pred_scaled = fold_model.predict(X_val_fold, verbose=0).reshape(-1, 1)
@@ -448,6 +472,7 @@ def run_walk_forward_backtest(X_train, y_train, scaler_return):
         np.mean(model_maes),
         np.mean(baseline_maes),
     )
+
 
 def main():
     np.random.seed(RANDOM_SEED)
@@ -497,7 +522,7 @@ def main():
         raw_data = download_crypto_data()
         features_df = build_feature_matrix(raw_data)
         n_features = features_df.shape[1]
-        close_series = raw_data['Close'].reindex(features_df.index)
+        close_series = raw_data["Close"].reindex(features_df.index)
         mlflow.log_param("n_features", int(n_features))
         mlflow.log_param("features", ",".join(list(features_df.columns)))
         mlflow.log_metric("total_rows", float(len(raw_data)))
@@ -529,7 +554,7 @@ def main():
 
         # Scaler exclusivo para log_return (feature 0) — usado na inferência e métricas
         scaler_return = MinMaxScaler(feature_range=(0, 1))
-        scaler_return.fit(train_features[['log_return']].values)
+        scaler_return.fit(train_features[["log_return"]].values)
 
         # Escalar conjunto total para criar janelas de teste
         all_features = pd.concat([train_features, test_features], axis=0)
@@ -542,8 +567,7 @@ def main():
         test_start_idx_in_windows = split_idx - LOOKBACK
         if test_start_idx_in_windows < 0:
             raise ValueError(
-                "Split inválido para LOOKBACK atual. "
-                "Ajuste TEST_SIZE_PCT ou LOOKBACK."
+                "Split inválido para LOOKBACK atual. Ajuste TEST_SIZE_PCT ou LOOKBACK."
             )
 
         X_test = X_all[test_start_idx_in_windows:]
@@ -568,17 +592,18 @@ def main():
         model = build_lstm_architecture((LOOKBACK, n_features))
 
         callbacks = [
-            EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True),
-            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=7, min_lr=1e-6, verbose=1)
+            EarlyStopping(monitor="val_loss", patience=15, restore_best_weights=True),
+            ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=7, min_lr=1e-6, verbose=1),
         ]
 
         model.fit(
-            X_train_fit, y_train_fit,
+            X_train_fit,
+            y_train_fit,
             batch_size=BATCH_SIZE,
             epochs=EPOCHS,
             validation_data=(X_val, y_val),
             callbacks=callbacks,
-            verbose=1
+            verbose=1,
         )
 
         # 7. Avaliação no conjunto de teste
@@ -586,8 +611,11 @@ def main():
         predictions_return = scaler_return.inverse_transform(predictions_scaled).reshape(-1)
         y_test_return = scaler_return.inverse_transform(y_test.reshape(-1, 1)).reshape(-1)
 
-        target_indices = all_features.index[LOOKBACK + test_start_idx_in_windows:
-                                             LOOKBACK + test_start_idx_in_windows + len(y_test)]
+        target_indices = all_features.index[
+            LOOKBACK + test_start_idx_in_windows : LOOKBACK
+            + test_start_idx_in_windows
+            + len(y_test)
+        ]
         prev_close = close_series.shift(1).reindex(target_indices).values
         y_test_real_price = close_series.reindex(target_indices).values
 
@@ -620,18 +648,20 @@ def main():
 
         beats_baseline = mae < baseline_mae and rmse < baseline_rmse
 
-        mlflow.log_metrics({
-            "mae_price": float(mae),
-            "rmse_price": float(rmse),
-            "mape_price": float(mape),
-            "mae_price_baseline": float(baseline_mae),
-            "rmse_price_baseline": float(baseline_rmse),
-            "mape_price_baseline": float(baseline_mape),
-            "mae_return": float(model_return_mae),
-            "mae_return_baseline": float(baseline_return_mae),
-            "direction_accuracy_pct": float(direction_accuracy),
-            "beats_baseline": float(beats_baseline),
-        })
+        mlflow.log_metrics(
+            {
+                "mae_price": float(mae),
+                "rmse_price": float(rmse),
+                "mape_price": float(mape),
+                "mae_price_baseline": float(baseline_mae),
+                "rmse_price_baseline": float(baseline_rmse),
+                "mape_price_baseline": float(baseline_mape),
+                "mae_return": float(model_return_mae),
+                "mae_return_baseline": float(baseline_return_mae),
+                "direction_accuracy_pct": float(direction_accuracy),
+                "beats_baseline": float(beats_baseline),
+            }
+        )
 
         # 8. Registrar artefatos e metadados no MLflow
         metadata = {
@@ -653,9 +683,9 @@ def main():
                 "mape_price_baseline": float(baseline_mape),
                 "mae_return": float(model_return_mae),
                 "mae_return_baseline": float(baseline_return_mae),
-                "direction_accuracy_pct": float(direction_accuracy)
+                "direction_accuracy_pct": float(direction_accuracy),
             },
-            "beats_baseline": bool(beats_baseline)
+            "beats_baseline": bool(beats_baseline),
         }
 
         log_training_artifacts(model, scaler_all, scaler_return, metadata)
@@ -682,6 +712,7 @@ def main():
         logger.info("Modelo superou baseline? %s", "SIM" if beats_baseline else "NAO")
         logger.info("%s", "=" * 40)
         logger.info("MLflow run finalizada: %s", mlflow.active_run().info.run_id)
+
 
 if __name__ == "__main__":
     main()

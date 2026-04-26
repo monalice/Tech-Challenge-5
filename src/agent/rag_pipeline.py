@@ -20,9 +20,10 @@ SIMULATED_CRYPTO_NEWS: list[dict[str, str]] = [
         "topic": "etfs",
         "published_at": "2026-04-18",
         "content": (
-            "Os ETFs spot de Bitcoin nos Estados Unidos registraram nova rodada de entradas líquidas, "
-            "sinalizando demanda institucional resiliente. Analistas destacam que fluxo consistente em ETFs "
-            "costuma reduzir pressão vendedora de curto prazo e sustentar o sentimento comprador."
+            "Os ETFs spot de Bitcoin nos Estados Unidos registraram nova rodada "
+            "de entradas líquidas, sinalizando demanda institucional resiliente. "
+            "Analistas destacam que fluxo consistente em ETFs costuma reduzir "
+            "pressão vendedora de curto prazo e sustentar o sentimento comprador."
         ),
     },
     {
@@ -30,9 +31,10 @@ SIMULATED_CRYPTO_NEWS: list[dict[str, str]] = [
         "topic": "macro",
         "published_at": "2026-04-17",
         "content": (
-            "Declarações de dirigentes do Federal Reserve levaram o mercado a revisar a trajetória esperada "
-            "de cortes de juros. Para o Bitcoin, juros reais mais altos no curto prazo podem aumentar a "
-            "volatilidade e reduzir o apetite por risco, embora a tese estrutural de adoção siga intacta."
+            "Declarações de dirigentes do Federal Reserve levaram o mercado a "
+            "revisar a trajetória esperada de cortes de juros. Para o Bitcoin, "
+            "juros reais mais altos no curto prazo podem aumentar a volatilidade "
+            "e reduzir o apetite por risco, embora a tese estrutural siga intacta."
         ),
     },
     {
@@ -40,9 +42,10 @@ SIMULATED_CRYPTO_NEWS: list[dict[str, str]] = [
         "topic": "mining",
         "published_at": "2026-04-15",
         "content": (
-            "Dados on-chain sugerem desaceleração nas vendas de BTC por parte de mineradores. Menor pressão "
-            "de distribuição pode favorecer estabilidade de preço no curto prazo, especialmente quando combinada "
-            "com liquidez saudável nas corretoras."
+            "Dados on-chain sugerem desaceleração nas vendas de BTC por parte de "
+            "mineradores. Menor pressão de distribuição pode favorecer estabilidade "
+            "de preço no curto prazo, especialmente quando combinada com liquidez "
+            "saudável nas corretoras."
         ),
     },
     {
@@ -50,9 +53,10 @@ SIMULATED_CRYPTO_NEWS: list[dict[str, str]] = [
         "topic": "volatility",
         "published_at": "2026-04-14",
         "content": (
-            "O mercado de opções de Bitcoin precificou maior volatilidade implícita antes de indicadores "
-            "macroeconômicos relevantes. Em ambientes assim, previsões de curto prazo exigem mais cautela e "
-            "devem comunicar explicitamente faixas prováveis e risco de reversão rápida."
+            "O mercado de opções de Bitcoin precificou maior volatilidade implícita "
+            "antes de indicadores macroeconômicos relevantes. Em ambientes assim, "
+            "previsões de curto prazo exigem mais cautela e devem comunicar faixas "
+            "prováveis e risco de reversão rápida."
         ),
     },
     {
@@ -60,20 +64,25 @@ SIMULATED_CRYPTO_NEWS: list[dict[str, str]] = [
         "topic": "dominance",
         "published_at": "2026-04-13",
         "content": (
-            "A dominância do Bitcoin continua elevada, indicando que o capital segue concentrado no ativo "
-            "principal do mercado cripto. Esse padrão costuma aparecer em momentos de busca por liquidez, "
-            "qualidade e menor tolerância ao risco."
+            "A dominância do Bitcoin continua elevada, indicando que o capital "
+            "segue concentrado no ativo principal do mercado cripto. Esse padrão "
+            "costuma aparecer em momentos de busca por liquidez, qualidade e menor "
+            "tolerância ao risco."
         ),
     },
 ]
 
 
-def build_google_embeddings(model: str = DEFAULT_EMBEDDING_MODEL) -> GoogleGenerativeAIEmbeddings:
+def build_google_embeddings(
+    model: str = DEFAULT_EMBEDDING_MODEL,
+) -> GoogleGenerativeAIEmbeddings:
     """Create the Google embedding client used by the RAG pipeline."""
     return GoogleGenerativeAIEmbeddings(model=model)
 
 
-def build_documents(texts: Sequence[str], metadatas: Sequence[dict] | None = None) -> list[Document]:
+def build_documents(
+    texts: Sequence[str], metadatas: Sequence[dict] | None = None
+) -> list[Document]:
     """Convert raw texts and optional metadata into LangChain documents."""
     if metadatas and len(texts) != len(metadatas):
         raise ValueError("texts e metadatas devem ter o mesmo tamanho.")
@@ -90,7 +99,8 @@ def _import_chroma() -> type:
         from langchain_community.vectorstores import Chroma
     except ImportError as exc:
         raise ImportError(
-            "Chroma nao esta disponivel. Instale as dependencias de vector store em requirements.txt."
+            "Chroma nao esta disponivel. "
+            "Instale as dependencias de vector store em requirements.txt."
         ) from exc
     return Chroma
 
@@ -100,7 +110,8 @@ def _import_faiss() -> type:
         from langchain_community.vectorstores import FAISS
     except ImportError as exc:
         raise ImportError(
-            "FAISS nao esta disponivel. Instale as dependencias de vector store em requirements.txt."
+            "FAISS nao esta disponivel. "
+            "Instale as dependencias de vector store em requirements.txt."
         ) from exc
     return FAISS
 

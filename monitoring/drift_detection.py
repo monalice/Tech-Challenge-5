@@ -21,10 +21,12 @@ def _extract_prediction_dataframe(prediction_log: Any) -> pd.DataFrame:
         if ts is None or value is None:
             continue
 
-        rows.append({
-            "timestamp": pd.to_datetime(ts, utc=True, errors="coerce"),
-            "price": float(value),
-        })
+        rows.append(
+            {
+                "timestamp": pd.to_datetime(ts, utc=True, errors="coerce"),
+                "price": float(value),
+            }
+        )
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -75,7 +77,9 @@ def _build_report_with_psi():
             return Report(metrics=[DataDriftPreset()])
 
 
-def _calculate_psi_fallback(reference_data: pd.DataFrame, current_data: pd.DataFrame, bins: int = 10) -> float:
+def _calculate_psi_fallback(
+    reference_data: pd.DataFrame, current_data: pd.DataFrame, bins: int = 10
+) -> float:
     """Calcula PSI manualmente quando Evidently não está operacional no ambiente."""
     ref = pd.to_numeric(reference_data["price"], errors="coerce").dropna()
     cur = pd.to_numeric(current_data["price"], errors="coerce").dropna()
@@ -158,7 +162,9 @@ async def detect_data_drift(
         logger.warning(json.dumps(payload, ensure_ascii=False))
         return {"status": "skipped", **payload}
 
-    merged = pd.merge(prediction_df, real_df, on="timestamp", how="inner", suffixes=("_pred", "_real"))
+    merged = pd.merge(
+        prediction_df, real_df, on="timestamp", how="inner", suffixes=("_pred", "_real")
+    )
 
     if merged.empty:
         payload = {
@@ -206,7 +212,9 @@ async def detect_data_drift(
     }
 
     if psi > 0.2:
-        logger.error(json.dumps({**payload, "action": "simulate_retrain_trigger"}, ensure_ascii=False))
+        logger.error(
+            json.dumps({**payload, "action": "simulate_retrain_trigger"}, ensure_ascii=False)
+        )
     elif psi > 0.1:
         logger.warning(json.dumps(payload, ensure_ascii=False))
     else:

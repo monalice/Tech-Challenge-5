@@ -49,6 +49,7 @@ YFINANCE_MAX_RETRIES = 2
 # Indicadores técnicos (replicados de app.py para inferência independente)
 # ---------------------------------------------------------------------------
 
+
 def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -59,7 +60,9 @@ def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return (100 - (100 / (1 + rs))).fillna(50.0)
 
 
-def _compute_macd_signal(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.Series:
+def _compute_macd_signal(
+    series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+) -> pd.Series:
     ema_fast = series.ewm(span=fast, adjust=False).mean()
     ema_slow = series.ewm(span=slow, adjust=False).mean()
     macd_line = ema_fast - ema_slow
@@ -67,7 +70,9 @@ def _compute_macd_signal(series: pd.Series, fast: int = 12, slow: int = 26, sign
     return ((macd_line - signal_line) / series.replace(0, np.nan)).fillna(0.0)
 
 
-def _compute_bollinger_pct_b(series: pd.Series, period: int = 20, num_std: float = 2.0) -> pd.Series:
+def _compute_bollinger_pct_b(
+    series: pd.Series, period: int = 20, num_std: float = 2.0
+) -> pd.Series:
     sma = series.rolling(window=period).mean()
     std = series.rolling(window=period).std()
     upper = sma + num_std * std
@@ -92,7 +97,9 @@ def _remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
         return series
     last_ts = pd.Timestamp(series.index[-1])
     now_utc = pd.Timestamp.utcnow()
-    now_ref = now_utc.tz_localize(None) if last_ts.tzinfo is None else now_utc.tz_convert(last_ts.tz)
+    now_ref = (
+        now_utc.tz_localize(None) if last_ts.tzinfo is None else now_utc.tz_convert(last_ts.tz)
+    )
     if last_ts >= now_ref.floor("h"):
         return series.iloc[:-1]
     return series
@@ -114,8 +121,11 @@ def _ts_to_brt_iso(ts: pd.Timestamp) -> str:
 # Download de dados de mercado (yfinance → Binance fallback)
 # ---------------------------------------------------------------------------
 
+
 def _fetch_yfinance(ticker: str) -> pd.DataFrame:
-    df = yf.download(ticker, period="1mo", interval="1h", progress=False, timeout=YFINANCE_TIMEOUT_SECONDS)
+    df = yf.download(
+        ticker, period="1mo", interval="1h", progress=False, timeout=YFINANCE_TIMEOUT_SECONDS
+    )
     if df is None or df.empty:
         raise ValueError("Resposta vazia do Yahoo Finance")
     if isinstance(df.columns, pd.MultiIndex):
@@ -159,7 +169,9 @@ def _download_market_data(ticker: str) -> tuple[pd.DataFrame, str]:
             return df, "yfinance"
         except Exception as exc:
             last_err = exc
-            logger.warning("[agent] yfinance tentativa %d/%d falhou: %s", attempt, YFINANCE_MAX_RETRIES, exc)
+            logger.warning(
+                "[agent] yfinance tentativa %d/%d falhou: %s", attempt, YFINANCE_MAX_RETRIES, exc
+            )
             if attempt < YFINANCE_MAX_RETRIES:
                 time.sleep(0.5 * attempt)
 
@@ -175,6 +187,7 @@ def _download_market_data(ticker: str) -> tuple[pd.DataFrame, str]:
 # ---------------------------------------------------------------------------
 # Fábrica de ferramentas (encapsula ml_artifacts via closure)
 # ---------------------------------------------------------------------------
+
 
 def _make_tools(ml_artifacts: dict[str, Any]) -> list:
     """Cria e retorna as 3 ferramentas LangChain para o agente ReAct."""
@@ -227,7 +240,10 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list:
                 ).dropna()
 
                 if len(features_df) < LOOKBACK:
-                    return f"Dados insuficientes: {len(features_df)} candles disponíveis, necessário {LOOKBACK}."
+                    return (
+                        "Dados insuficientes: "
+                        f"{len(features_df)} candles disponíveis, necessário {LOOKBACK}."
+                    )
 
                 window = features_df.to_numpy()[-LOOKBACK:]
                 scaled_input = scaler.transform(window)
@@ -237,13 +253,17 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list:
 
                 if scaler_return is not None:
                     predicted_log_return = float(
-                        scaler_return.inverse_transform(predicted_scaled.reshape(-1, 1)).reshape(-1)[0]
+                        scaler_return.inverse_transform(predicted_scaled.reshape(-1, 1)).reshape(
+                            -1
+                        )[0]
                     )
                 else:
                     try:
                         min_val = float(scaler.data_min_[0])
                         max_val = float(scaler.data_max_[0])
-                        predicted_log_return = float(predicted_scaled.reshape(-1)[0]) * (max_val - min_val) + min_val
+                        predicted_log_return = (
+                            float(predicted_scaled.reshape(-1)[0]) * (max_val - min_val) + min_val
+                        )
                     except (AttributeError, IndexError):
                         predicted_log_return = float(predicted_scaled.reshape(-1)[0])
 
@@ -256,14 +276,21 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list:
                 ret_series = log_price.diff().dropna()
 
                 if len(ret_series) < LOOKBACK:
-                    return f"Dados insuficientes: {len(ret_series)} candles disponíveis, necessário {LOOKBACK}."
+                    return (
+                        "Dados insuficientes: "
+                        f"{len(ret_series)} candles disponíveis, necessário {LOOKBACK}."
+                    )
 
-                last_returns = np.asarray(ret_series.to_numpy()[-LOOKBACK:], dtype=float).reshape(-1, 1)
+                last_returns = np.asarray(ret_series.to_numpy()[-LOOKBACK:], dtype=float).reshape(
+                    -1, 1
+                )
                 scaled_input = scaler.transform(last_returns)
                 X_input = scaled_input.reshape(1, LOOKBACK, 1)
 
                 predicted_scaled = model.predict(X_input, verbose=0)
-                predicted_log_return = float(scaler.inverse_transform(predicted_scaled).reshape(-1)[0])
+                predicted_log_return = float(
+                    scaler.inverse_transform(predicted_scaled).reshape(-1)[0]
+                )
                 last_close = float(close_series.iloc[-1])
                 last_ts = pd.Timestamp(close_series.index[-1])
 
@@ -345,7 +372,9 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list:
                 f"Referência: {_ts_to_brt_iso(last_ts)} (BRT)\n"
                 f"Fonte: {data_source}"
             )
-            logger.info("[agent:cotacao_atual] preço=%.2f variação=%.2f%%", last_price, price_change_pct)
+            logger.info(
+                "[agent:cotacao_atual] preço=%.2f variação=%.2f%%", last_price, price_change_pct
+            )
             return result
 
         except Exception as exc:
@@ -379,13 +408,18 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list:
             store = _get_crypto_news_store()
             docs = similarity_search(store, query, k=3)
         except Exception as exc:
-            logger.error("[agent:crypto_knowledge_rag] erro ao consultar vector store: %s", exc, exc_info=True)
+            logger.error(
+                "[agent:crypto_knowledge_rag] erro ao consultar vector store: %s",
+                exc,
+                exc_info=True,
+            )
             return f"RAG indisponível no momento: {exc}"
 
         if not docs:
             return (
-                "Nenhum contexto relevante foi encontrado no repositório vetorial de notícias cripto. "
-                "Considere responder com cautela e explicitar a incerteza."
+                "Nenhum contexto relevante foi encontrado no repositório vetorial "
+                "de notícias cripto. Considere responder com cautela e explicitar "
+                "a incerteza."
             )
 
         formatted_contexts: list[str] = []
@@ -394,10 +428,13 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list:
             topic = str(doc.metadata.get("topic", "geral"))
             published_at = str(doc.metadata.get("published_at", "data desconhecida"))
             formatted_contexts.append(
-                f"[Contexto {index}] {title} | tópico: {topic} | data: {published_at}\n{doc.page_content}"
+                f"[Contexto {index}] {title} | tópico: {topic} | "
+                f"data: {published_at}\n{doc.page_content}"
             )
 
-        logger.info("[agent:crypto_knowledge_rag] query=%r → %d documentos recuperados", query, len(docs))
+        logger.info(
+            "[agent:crypto_knowledge_rag] query=%r → %d documentos recuperados", query, len(docs)
+        )
         return "\n\n".join(formatted_contexts)
 
     return [previsao_bitcoin, cotacao_atual, crypto_knowledge_rag]
@@ -409,7 +446,9 @@ def _remove_incomplete_hour_candle_df(df: pd.DataFrame) -> pd.DataFrame:
         return df
     last_ts = pd.Timestamp(df.index[-1])
     now_utc = pd.Timestamp.utcnow()
-    now_ref = now_utc.tz_localize(None) if last_ts.tzinfo is None else now_utc.tz_convert(last_ts.tz)
+    now_ref = (
+        now_utc.tz_localize(None) if last_ts.tzinfo is None else now_utc.tz_convert(last_ts.tz)
+    )
     if last_ts >= now_ref.floor("h"):
         return df.iloc[:-1]
     return df
@@ -418,10 +457,11 @@ def _remove_incomplete_hour_candle_df(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Prompt ReAct
 # ---------------------------------------------------------------------------
-_REACT_PROMPT_TEMPLATE = """Você é um assistente especialista em mercados de criptomoedas, com acesso a
-dados de mercado em tempo real e um modelo LSTM para previsão do Bitcoin.
+_REACT_PROMPT_TEMPLATE = """Você é um assistente especialista em mercados de criptomoedas,
+com acesso a dados de mercado em tempo real e um modelo LSTM para previsão do Bitcoin.
 
-Responda sempre em português brasileiro. Seja preciso, objetivo e cite os dados retornados pelas ferramentas.
+Responda sempre em português brasileiro. Seja preciso, objetivo e cite os dados
+retornados pelas ferramentas.
 
 Você tem acesso às seguintes ferramentas:
 
@@ -450,6 +490,7 @@ _REACT_PROMPT = PromptTemplate.from_template(_REACT_PROMPT_TEMPLATE)
 # Fábrica do agente
 # ---------------------------------------------------------------------------
 
+
 def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
     """Constrói e retorna um AgentExecutor ReAct configurado com as 3 ferramentas.
 
@@ -459,7 +500,8 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
         ml_artifacts: dicionário compartilhado com 'model', 'scaler', 'scaler_return' e 'metadata'.
 
     Returns:
-        AgentExecutor pronto para receber ``{"input": "<pergunta>"}`` via ``.invoke()``.
+        AgentExecutor pronto para receber ``{"input": "<pergunta>"}``
+        via ``.invoke()``.
     """
     google_api_key = os.getenv("GOOGLE_API_KEY")
     if not google_api_key:

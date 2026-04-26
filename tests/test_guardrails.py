@@ -46,9 +46,7 @@ def test_output_guardrail_anonymizer_then_regex(monkeypatch):
         analyze=lambda **kwargs: [SimpleNamespace(entity_type="EMAIL_ADDRESS")]
     )
     fake_anonymizer = SimpleNamespace(
-        anonymize=lambda **kwargs: SimpleNamespace(
-            text="mail <EMAIL_ADDRESS> cpf 123.456.789-09"
-        )
+        anonymize=lambda **kwargs: SimpleNamespace(text="mail <EMAIL_ADDRESS> cpf 123.456.789-09")
     )
 
     guard._analyzer = fake_analyzer

@@ -26,12 +26,14 @@ def _real_df(periods: int = 20, start: str = "2026-01-01", base: float = 100.0):
 
 
 def test_extract_prediction_dataframe_filters_invalid_items():
-    log = deque([
-        {"forecast_for_utc": "2026-01-01T00:00:00+00:00", "predicted_price_usd": 100.0},
-        {"forecast_for_utc": None, "predicted_price_usd": 101.0},
-        {"foo": "bar"},
-        "invalid",
-    ])
+    log = deque(
+        [
+            {"forecast_for_utc": "2026-01-01T00:00:00+00:00", "predicted_price_usd": 100.0},
+            {"forecast_for_utc": None, "predicted_price_usd": 101.0},
+            {"foo": "bar"},
+            "invalid",
+        ]
+    )
     df = dd._extract_prediction_dataframe(log)
     assert len(df) == 1
     assert list(df.columns) == ["timestamp", "price"]
