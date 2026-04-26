@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry
+from monitoring.drift_detection import detect_data_drift
 from src.security.guardrails import InputGuardrail, OutputGuardrail
 
 # --- Logging estruturado ---
@@ -110,6 +111,10 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Passos intermediários executados pelo agente (ferramentas chamadas)"
     )
+
+
+class DriftCheckRequest(BaseModel):
+    ticker: str = Field(default="BTC-USD", description="Ticker para verificacao de drift")
 
 # --- Configuração geral ---
 ml_artifacts: dict = {}
@@ -532,6 +537,27 @@ def prometheus_metrics():
 def predictions_history():
     entries = list(reversed(prediction_log))
     return {"total_logged": len(entries), "predictions": entries}
+
+
+@app.post(
+    "/admin/check-drift",
+    summary="Executa checagem de data drift",
+    description=(
+        "Executa a deteccao de data drift via PSI comparando historico de previsoes e dados reais. "
+        "Endpoint administrativo para automacao MLOps."
+    ),
+)
+async def check_drift(request: DriftCheckRequest = Body(default_factory=DriftCheckRequest)):
+    """Executa a checagem assíncrona de drift.
+
+    Este endpoint deve ser chamado por um EventBridge/Cronjob na AWS para automacao do MLOps.
+    """
+    result = await detect_data_drift(
+        ticker=request.ticker.upper(),
+        download_fn=download_with_retry,
+        prediction_log=prediction_log,
+    )
+    return result
 
 @app.post(
     "/predict",
