@@ -206,11 +206,40 @@ O modelo treinado com `train_model.py` incorpora:
 
 O projeto inclui um pipeline DVC em [dvc.yaml](dvc.yaml) e um script de setup em [scripts/setup_dvc.sh](scripts/setup_dvc.sh).
 
-Fluxo recomendado:
+Fluxo recomendado (reprodutibilidade local):
 
 1. Instale as dependências na `.venv` com `pip install -r requirements.txt`.
 2. Execute o setup inicial do DVC com `bash scripts/setup_dvc.sh`.
-3. Reproduza o pipeline com `dvc repro`.
+3. Configure credenciais do remote DVC (S3) no ambiente local.
+4. Execute `dvc pull` para baixar artefatos/dados versionados.
+5. Reproduza o pipeline com `dvc repro`.
+
+### Reprodução local passo a passo (Windows PowerShell)
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install dvc[s3]
+
+# Credenciais de exemplo (use valores reais no seu ambiente)
+$env:AWS_ACCESS_KEY_ID="<seu_access_key>"
+$env:AWS_SECRET_ACCESS_KEY="<seu_secret_key>"
+$env:AWS_DEFAULT_REGION="us-east-1"
+
+dvc pull
+dvc repro
+```
+
+### Comportamento em CI/CD sem credenciais
+
+Os workflows do GitHub Actions tentam executar `dvc pull` **antes dos testes** somente quando as credenciais opcionais estão presentes:
+
+- `DVC_AWS_ACCESS_KEY_ID`
+- `DVC_AWS_SECRET_ACCESS_KEY`
+- `DVC_AWS_SESSION_TOKEN` (opcional)
+- `DVC_AWS_DEFAULT_REGION` (opcional)
+
+Se as credenciais não estiverem disponíveis (por exemplo, PR de fork), o pipeline **não quebra**: os testes seguem com fixtures locais versionadas e fallback determinístico.
 
 O setup realiza:
 
@@ -222,6 +251,16 @@ O pipeline DVC orquestra:
 
 - `prepare_data`: geração/atualização de `models/btc_hourly_cache.csv`
 - `train_model`: treino do modelo em [src/train_model.py](src/train_model.py)
+
+### Estratégia segura para dados mínimos de teste
+
+Para garantir reprodutibilidade de testes sem depender de rede/credenciais:
+
+- Dataset mínimo versionado em [tests/fixtures/btc_hourly_minimal.csv](tests/fixtures/btc_hourly_minimal.csv).
+- Fixture principal em [tests/conftest.py](tests/conftest.py) tenta carregar esse CSV primeiro.
+- Se o arquivo não estiver disponível, a fixture usa fallback sintético **determinístico** (seed fixa).
+
+Isso evita dados sensíveis e mantém os testes estáveis em ambientes locais e CI.
 
 ## Deploy de infraestrutura AWS (Terraform)
 
@@ -285,6 +324,8 @@ make quality       # lint + type-check + security + test
 make train         # executa src/train_model.py
 make serve         # sobe a API localmente com reload
 make docker-build  # docker build -t btc-predictor:latest .
+make llm-judge     # avalia golden set com 3 criterios e gera saidas latest + versionada
+make llm-judge-live # gera respostas via /chat e avalia com 3 criterios
 ```
 
 ### Pre-commit hooks
@@ -297,7 +338,20 @@ pre-commit install        # instala os hooks no repositório
 pre-commit run --all-files  # executa manualmente em todos os arquivos
 ```
 
-Hooks ativos: `ruff` (lint + format), `trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-merge-conflict`.
+Hooks ativos incluem:
+
+- qualidade de código: `ruff`, `ruff-format`, `trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-merge-conflict`
+- segurança de segredos: `detect-private-key`, `detect-secrets`
+- checklist de segurança no commit: bloqueio de `.env`, `.env.*` (exceto `.env.example`), logs (`*.log`, `train_out.txt`, `train_err.txt`), `mlruns/` e artefatos binários em `models/`
+
+Checklist rápido antes de commitar:
+
+- confirme que nenhum segredo real foi adicionado em arquivos de código, docs ou YAML
+- mantenha `.env` fora do controle de versão
+- mantenha `.env.example` apenas com placeholders
+- não versione logs operacionais nem artefatos binários de treino
+
+Detalhes operacionais da política: [docs/OWASP_MAPPING.md](docs/OWASP_MAPPING.md).
 
 ### Variáveis de ambiente
 
@@ -310,14 +364,61 @@ cp .env.example .env
 | Variável | Descrição |
 |---|---|
 | `GOOGLE_API_KEY` | Chave da Google AI (obrigatória para o agente ReAct) |
+| `APP_ENV` | Ambiente da aplicação (`development`, `staging`, `production`). Em `production`, a API faz fail-fast se `GOOGLE_API_KEY` estiver ausente, placeholder ou formato inválido |
+| `GEMINI_LLM_MODEL` | Modelo LLM Gemini base (fallback para componentes de avaliação) |
+| `GEMINI_EMBEDDING_MODEL` | Modelo de embeddings Gemini base |
+| `GEMINI_TEMPERATURE` | Temperatura padrão global para componentes Gemini |
+| `GEMINI_TOP_P` | Top-p padrão global para componentes Gemini (opcional) |
+| `GEMINI_TOP_K` | Top-k padrão global para componentes Gemini (opcional) |
+| `AGENT_LLM_MODEL` | Modelo Gemini do agente ReAct |
+| `AGENT_LLM_TEMPERATURE` | Override de temperatura do agente ReAct |
+| `AGENT_LLM_TOP_P` | Override de top-p do agente ReAct (opcional) |
+| `AGENT_LLM_TOP_K` | Override de top-k do agente ReAct (opcional) |
+| `RAGAS_LLM_MODEL` | Modelo Gemini usado no `evaluation/ragas_eval.py` |
+| `RAGAS_EMBEDDING_MODEL` | Modelo de embeddings usado no `evaluation/ragas_eval.py` |
+| `RAGAS_LLM_TEMPERATURE` | Override de temperatura no `evaluation/ragas_eval.py` |
+| `RAGAS_LLM_TOP_P` | Override de top-p no `evaluation/ragas_eval.py` (opcional) |
+| `RAGAS_LLM_TOP_K` | Override de top-k no `evaluation/ragas_eval.py` (opcional) |
+| `LLM_JUDGE_MODEL` | Modelo Gemini usado no `evaluation/llm_judge.py` |
+| `LLM_JUDGE_TEMPERATURE` | Override de temperatura no `evaluation/llm_judge.py` |
+| `LLM_JUDGE_TOP_P` | Override de top-p no `evaluation/llm_judge.py` (opcional) |
+| `LLM_JUDGE_TOP_K` | Override de top-k no `evaluation/llm_judge.py` (opcional) |
+| `RAG_EMBEDDING_MODEL` | Modelo de embeddings usado no pipeline RAG do agente |
 | `MLFLOW_TRACKING_URI` | URI do servidor MLflow (ex.: PostgreSQL RDS) |
 | `MLFLOW_EXPERIMENT_NAME` | Nome do experimento MLflow |
+| `MLFLOW_ARTIFACT_URI` | (Opcional) URI de artefatos do experimento MLflow quando ele é criado pela primeira vez |
+| `MLFLOW_MODEL_NAME` | Nome lógico único do modelo no Registry; controla agrupamento de versões, aliases (`champion`/`candidate`) e trilha de auditoria |
+| `MLFLOW_MODEL_VERSION` | Tag semântica de versão registrada no run/modelo (ex.: `v1`, `v2`); facilita governança de release e rollback |
+| `MLFLOW_OWNER` | Responsável pelo modelo (squad/pessoa); usado para accountability e gestão de incidentes |
+| `MLFLOW_RISK_LEVEL` | Nível de risco do modelo (`low`, `medium`, `high`); suporta controles de aprovação e priorização de monitoramento |
+| `MLFLOW_TRAINING_DATA_VERSION` | Referência documental para lineage de dados de treino. No pipeline atual, o valor efetivo é calculado automaticamente como `git_sha:dvc_data_hash` (imutável) |
 | `AWS_REGION` | Região AWS para ECR/ECS |
 | `ECR_REPOSITORY` | Nome do repositório ECR |
 | `ECS_CLUSTER` | Cluster ECS para deploy |
 | `LANGFUSE_PUBLIC_KEY` | Chave pública Langfuse (opcional) |
 | `LANGFUSE_SECRET_KEY` | Chave secreta Langfuse (opcional) |
 | `APP_PORT` | Porta da aplicação (padrão: `8000`) |
+
+### Governança de metadata do treino (MLflow)
+
+Variáveis recomendadas no `.env` para rastreabilidade e governança do treino:
+
+```bash
+MLFLOW_MODEL_NAME=btc_hourly_forecaster
+MLFLOW_MODEL_VERSION=v1
+MLFLOW_OWNER=ml-team
+MLFLOW_RISK_LEVEL=medium
+# Valor efetivo no treino: derivado automaticamente de lineage imutável
+MLFLOW_TRAINING_DATA_VERSION=gitsha123:deadbeefcafebabe1234567890abcdef
+```
+
+Impacto de governança:
+
+- `MLFLOW_MODEL_NAME`: define o namespace de versões e aliases do Registry (`champion`/`candidate`), evitando mistura entre famílias de modelo.
+- `MLFLOW_MODEL_VERSION`: cria trilha de release semântica para auditoria de mudanças de arquitetura/hiperparâmetros.
+- `MLFLOW_OWNER`: explicita ownership operacional para resposta a incidentes, aprovações e handoff.
+- `MLFLOW_RISK_LEVEL`: sinaliza criticidade para políticas de revisão, observabilidade e cadência de revalidação.
+- `training_data_version` (tag efetiva): vincula o modelo ao dataset exato usado no treino, garantindo reprodutibilidade e investigação forense.
 
 ## Telemetria de Qualidade LLM (Langfuse)
 
@@ -331,6 +432,30 @@ LANGFUSE_SECRET_KEY=sk-lf-...
 ```
 
 Métricas rastreadas por trace: faithfulness, relevância da resposta, latência por chamada LLM, contagem de tokens e sequência de ferramentas invocadas.
+
+## Hardening de Segredos no Startup
+
+Para reduzir risco de credenciais fracas em produção, o startup da API valida `GOOGLE_API_KEY` com política fail-fast quando `APP_ENV=production`.
+
+Bloqueios em produção:
+
+- chave ausente
+- placeholder/insegura (ex.: `your-google-api-key`, `mock_key_para_testes`)
+- formato incompatível com chave esperada
+
+Exemplo de configuração local segura:
+
+```bash
+APP_ENV=development
+GOOGLE_API_KEY=your-google-api-key
+```
+
+Exemplo de produção:
+
+```bash
+APP_ENV=production
+GOOGLE_API_KEY=AIzaSy<valor-real>
+```
 
 ## Avaliação de Qualidade RAG (RAGAS)
 
@@ -366,15 +491,120 @@ Para avaliar com as 4 métricas RAGAS (faithfulness, answer_relevancy, context_p
 ```bash
 # Usando respostas pré-computadas no golden set (sem chamada de API)
 python evaluation/ragas_eval.py \
-  --golden-set data/golden_set/btc_rag_golden_set.json
+  --golden-set data/golden_set/btc_rag_golden_set.json \
+  --expected-questions 21 \
+  --seed 42
 
 # Gerando respostas ao vivo via /chat (API rodando)
 python evaluation/ragas_eval.py \
   --golden-set data/golden_set/btc_rag_golden_set.json \
   --api-url http://localhost:8000
+
+# Executando métricas RAGAS online com Gemini (consome cota)
+python evaluation/ragas_eval.py \
+  --golden-set data/golden_set/btc_rag_golden_set.json \
+  --expected-questions 21 \
+  --seed 42 \
+  --enable-live-ragas \
+  --strict-ragas
 ```
 
-Requer `GOOGLE_API_KEY` no ambiente. Resultados salvos em `evaluation/ragas_results.json`.
+Observações importantes para reprodutibilidade e validade:
+
+- O script carrega automaticamente o arquivo `.env` na raiz do projeto.
+- O golden set é validado com contagem exata de 21 casos (`--expected-questions 21`).
+- A saída é salva de forma atômica em `evaluation/ragas_results.json`.
+- O JSON de saída não aceita `NaN`/`inf` (validação estrita antes de salvar).
+
+Comportamento do backend de métricas:
+
+- Por padrão, o script usa fallback determinístico (`deterministic_offline_fallback`) mesmo que `GOOGLE_API_KEY` esteja definida, para evitar consumo acidental de cota.
+- Se `--enable-live-ragas` estiver ativo e o backend executar normalmente, o resultado terá `metric_backend = ragas`.
+- Se o backend online falhar e `--strict-ragas` não estiver ativo, o script volta para o fallback determinístico para evitar métricas inválidas.
+- Para exigir RAGAS estrito, use `--enable-live-ragas --strict-ragas` em conjunto.
+
+Modelo LLM usado na avaliação:
+
+- Padrão: lê `RAGAS_LLM_MODEL`; se ausente, usa fallback `GEMINI_LLM_MODEL`; se ambos ausentes, usa `models/gemini-2.5-flash`.
+- Embeddings: lê `RAGAS_EMBEDDING_MODEL`; se ausente, usa fallback `GEMINI_EMBEDDING_MODEL`; se ambos ausentes, usa `models/gemini-embedding-001` (compatível com `embedContent` no free tier atual).
+- Sampling: lê `RAGAS_LLM_TEMPERATURE`, `RAGAS_LLM_TOP_P`, `RAGAS_LLM_TOP_K`; se ausentes, usa fallback global `GEMINI_TEMPERATURE`, `GEMINI_TOP_P`, `GEMINI_TOP_K`.
+- Evite modelos que suportam apenas Interactions API, pois podem gerar erro `400 This model only supports Interactions API` no executor do RAGAS.
+
+Interpretação das 4 métricas (escala 0 a 1, quanto maior melhor):
+
+- `faithfulness`: quanto da resposta está suportado pelos contextos recuperados (evita alucinação).
+- `answer_relevancy`: quanto a resposta é relevante para a pergunta e para a referência esperada.
+- `context_precision`: proporção do contexto recuperado que é realmente útil para sustentar a resposta.
+- `context_recall`: quanto da informação necessária (referência) foi coberta pelos contextos recuperados.
+
+Leitura prática rápida:
+
+- `faithfulness` baixa: resposta pode estar inventando ou extrapolando além dos contextos.
+- `answer_relevancy` baixa: resposta tangencia o tema, mas não responde bem a pergunta.
+- `context_precision` baixa: recuperação trouxe muito ruído.
+- `context_recall` baixa: recuperação perdeu fatos importantes.
+
+## Avaliação LLM-as-judge (3 critérios)
+
+O avaliador em [evaluation/llm_judge.py](evaluation/llm_judge.py) usa LLM-as-judge com 3 critérios fixos para o golden set existente:
+
+- `precisao_financeira` (1-5)
+- `clareza` (1-5)
+- `ausencia_alucinacoes` (1-5)
+
+A nota final (`nota_final`) é calculada no veredito estruturado em escala 0-10, usando pesos 40/30/30 para os 3 critérios.
+
+Execução com respostas já presentes no golden set:
+
+```bash
+python evaluation/llm_judge.py \
+  --golden-set data/golden_set/btc_rag_golden_set.json \
+  --min-questions 21 \
+  --output evaluation/llm_judge_results.json
+```
+
+Execução gerando respostas ao vivo via endpoint `/chat` (API rodando):
+
+```bash
+python evaluation/llm_judge.py \
+  --golden-set data/golden_set/btc_rag_golden_set.json \
+  --api-url http://127.0.0.1:8000 \
+  --min-questions 21 \
+  --output evaluation/llm_judge_results.json
+```
+
+Atalhos no Makefile:
+
+```bash
+make llm-judge
+make llm-judge-live
+```
+
+### Saída consistente e versionada
+
+Cada execução gera:
+
+- saída estável (latest): `evaluation/llm_judge_results.json`
+- saída versionada por execução: `evaluation/results/llm_judge/llm_judge_results_<timestamp>_<model>.json`
+
+Campos estáveis no JSON de saída:
+
+- `schema_version`
+- `evaluation_type` (`llm_judge_3_criteria`)
+- `criteria`
+- `generated_at_utc`
+- `run_config`
+- `judge_backend_counts`
+- `summary`
+- `records`
+
+Observações:
+
+- O script carrega automaticamente o `.env` da raiz do projeto.
+- O modelo juiz segue fallback: `LLM_JUDGE_MODEL` → `GEMINI_LLM_MODEL` → default interno.
+- Se ocorrer erro de quota/429 ou indisponibilidade do Gemini, o script entra em fallback determinístico para manter a execução e gerar saída válida.
+- Para forçar falha sem fallback, use `--strict-judge`.
+- Para desativar a cópia versionada, use `--skip-versioned-output`.
 
 ## Configuração de Monitoramento
 
@@ -392,6 +622,69 @@ model:
   registry_stage_production: "Production"
   registry_stage_challenger: "Staging"
 ```
+
+## Automação Operacional de Drift
+
+O endpoint `POST /admin/check-drift` agora atua como ponto de integração operacional para MLOps:
+
+- executa detecção de drift (PSI)
+- decide ação por threshold
+- envia alerta quando `psi > 0.1`
+- dispara trigger de retraining quando `psi > 0.2`
+- registra evento operacional no MLflow (`drift_action`, `alert_sent`, `retrain_*`)
+
+### Arquitetura mínima (local e testável)
+
+1. Scheduler chama periodicamente `POST /admin/check-drift`
+2. API calcula PSI e aplica política operacional
+3. API registra no MLflow o resultado da automação
+4. Se necessário:
+   - alerta por webhook
+   - trigger de retreino por comando local
+
+Componentes implementados:
+
+- Lógica operacional: [src/serving/drift_automation.py](src/serving/drift_automation.py)
+- Scheduler local APScheduler: [scripts/run_drift_scheduler.py](scripts/run_drift_scheduler.py)
+- Endpoint integrado: [src/app.py](src/app.py)
+
+### Variáveis de ambiente da automação
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `DRIFT_WARNING_THRESHOLD` | `0.1` | Limite para alerta |
+| `DRIFT_RETRAIN_THRESHOLD` | `0.2` | Limite para trigger de retreino |
+| `DRIFT_CHECK_INTERVAL_HOURS` | `24` | Intervalo do scheduler |
+| `DRIFT_ALERT_WEBHOOK_URL` | vazio | Webhook de alerta (Slack/Teams/etc.) |
+| `DRIFT_RETRAIN_ENABLED` | `false` | Habilita execução real do retreino |
+| `DRIFT_RETRAIN_COMMAND` | `python -u src/train_model.py` | Comando de retreino |
+| `DRIFT_RETRAIN_TIMEOUT_SECONDS` | `900` | Timeout do comando de retreino |
+| `DRIFT_AUTOMATION_API_URL` | `http://127.0.0.1:8000` | URL base da API para o scheduler |
+| `DRIFT_AUTOMATION_TICKER` | `BTC-USD` | Ticker usado no scheduler |
+
+### Como executar localmente
+
+1. Suba a API:
+
+```bash
+python -m uvicorn src.app:app --host 127.0.0.1 --port 8000
+```
+
+2. Rode um check manual:
+
+```bash
+make drift-check
+```
+
+3. Inicie agendamento periódico:
+
+```bash
+make drift-scheduler
+```
+
+### Observação de segurança operacional
+
+Por padrão, `DRIFT_RETRAIN_ENABLED=false`, então a ação de retraining é registrada, mas não executa comando local até habilitação explícita.
 
 ## Observações
 

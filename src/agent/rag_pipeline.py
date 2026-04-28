@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from functools import lru_cache
+import os
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.documents import Document
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-DEFAULT_EMBEDDING_MODEL = "models/text-embedding-004"
+DEFAULT_EMBEDDING_MODEL = os.getenv(
+    "RAG_EMBEDDING_MODEL",
+    os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004"),
+)
 DEFAULT_CHROMA_DIR = Path("data/processed/crypto_news_chroma")
 VectorStoreBackend = Literal["chroma", "faiss"]
 
@@ -81,7 +85,7 @@ def build_google_embeddings(
 
 
 def build_documents(
-    texts: Sequence[str], metadatas: Sequence[dict] | None = None
+    texts: Sequence[str], metadatas: Sequence[dict[str, Any]] | None = None
 ) -> list[Document]:
     """Convert raw texts and optional metadata into LangChain documents."""
     if metadatas and len(texts) != len(metadatas):
@@ -94,7 +98,7 @@ def build_documents(
     return documents
 
 
-def _import_chroma() -> type:
+def _import_chroma() -> Any:
     try:
         from langchain_community.vectorstores import Chroma
     except ImportError as exc:
@@ -105,7 +109,7 @@ def _import_chroma() -> type:
     return Chroma
 
 
-def _import_faiss() -> type:
+def _import_faiss() -> Any:
     try:
         from langchain_community.vectorstores import FAISS
     except ImportError as exc:
@@ -122,7 +126,7 @@ def build_vector_store(
     backend: VectorStoreBackend = "chroma",
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     persist_directory: str | Path | None = None,
-):
+) -> Any:
     """Build a Chroma or FAISS vector store using Google embeddings."""
     embeddings = build_google_embeddings(model=embedding_model)
     docs = list(documents)
@@ -144,11 +148,11 @@ def build_vector_store(
 def build_vector_store_from_texts(
     texts: Sequence[str],
     *,
-    metadatas: Sequence[dict] | None = None,
+    metadatas: Sequence[dict[str, Any]] | None = None,
     backend: VectorStoreBackend = "chroma",
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     persist_directory: str | Path | None = None,
-):
+) -> Any:
     """Convenience helper to build a vector store directly from text chunks."""
     documents = build_documents(texts=texts, metadatas=metadatas)
     return build_vector_store(
@@ -160,7 +164,7 @@ def build_vector_store_from_texts(
 
 
 def similarity_search(
-    vector_store,
+    vector_store: Any,
     query: str,
     *,
     k: int = 4,
@@ -189,7 +193,7 @@ def get_crypto_news_vector_store(
     backend: VectorStoreBackend = "chroma",
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     persist_directory: str | None = None,
-):
+) -> Any:
     """Create and cache the local vector store used by the agent RAG tool."""
     documents = build_simulated_news_documents()
     resolved_directory = persist_directory or str(DEFAULT_CHROMA_DIR)

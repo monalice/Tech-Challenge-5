@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from src import app as app_module
 
@@ -71,3 +72,43 @@ def test_estimate_uncertainty_without_metrics_returns_none_ci():
     err_pct, ci = app_module.estimate_uncertainty(10000.0, {})
     assert err_pct is None
     assert ci is None
+
+
+def test_is_production_environment_true_when_app_env_is_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+
+    assert app_module.is_production_environment() is True
+
+
+def test_validate_google_api_key_for_startup_allows_non_production(monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.delenv("STAGE", raising=False)
+    monkeypatch.delenv("DEPLOY_ENV", raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "mock_key_para_testes")
+
+    app_module.validate_google_api_key_for_startup()
+
+
+def test_validate_google_api_key_for_startup_rejects_placeholder_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("GOOGLE_API_KEY", "your-google-api-key")
+
+    with pytest.raises(RuntimeError, match="inválida para produção"):
+        app_module.validate_google_api_key_for_startup()
+
+
+def test_validate_google_api_key_for_startup_rejects_invalid_format_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("GOOGLE_API_KEY", "insecure-token")
+
+    with pytest.raises(RuntimeError, match="formato inválido"):
+        app_module.validate_google_api_key_for_startup()
+
+
+def test_validate_google_api_key_for_startup_accepts_valid_format_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy" + "A" * 30)
+
+    app_module.validate_google_api_key_for_startup()

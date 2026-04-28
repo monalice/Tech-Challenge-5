@@ -30,13 +30,15 @@ from langchain.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 try:
-    from langfuse.callback import CallbackHandler as LangfuseHandler
+    from langfuse.callback import CallbackHandler as LangfuseHandler  # type: ignore[import-not-found]
 
     _LANGFUSE_AVAILABLE = True
 except ImportError:
+    LangfuseHandler = None
     _LANGFUSE_AVAILABLE = False
 
 from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
+from src.features.technical_features import build_feature_matrix
 
 logger = logging.getLogger("stockcast.agent")
 
@@ -51,53 +53,38 @@ BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_TIMEOUT_SECONDS = 10
 YFINANCE_TIMEOUT_SECONDS = 10
 YFINANCE_MAX_RETRIES = 2
-
-# ---------------------------------------------------------------------------
-# Indicadores técnicos (replicados de app.py para inferência independente)
-# ---------------------------------------------------------------------------
+DEFAULT_AGENT_LLM_MODEL = os.getenv("AGENT_LLM_MODEL", os.getenv("GEMINI_LLM_MODEL", "gemini-2.5-pro"))
 
 
-def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return (100 - (100 / (1 + rs))).fillna(50.0)
+def _get_env_optional_float(primary_key: str, fallback_key: str | None = None) -> float | None:
+    raw_value = os.getenv(primary_key)
+    if (raw_value is None or raw_value.strip() == "") and fallback_key:
+        raw_value = os.getenv(fallback_key)
+    if raw_value is None or raw_value.strip() == "":
+        return None
+    return float(raw_value)
 
 
-def _compute_macd_signal(
-    series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
-) -> pd.Series:
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return ((macd_line - signal_line) / series.replace(0, np.nan)).fillna(0.0)
+def _get_env_optional_int(primary_key: str, fallback_key: str | None = None) -> int | None:
+    raw_value = os.getenv(primary_key)
+    if (raw_value is None or raw_value.strip() == "") and fallback_key:
+        raw_value = os.getenv(fallback_key)
+    if raw_value is None or raw_value.strip() == "":
+        return None
+    return int(raw_value)
 
 
-def _compute_bollinger_pct_b(
-    series: pd.Series, period: int = 20, num_std: float = 2.0
-) -> pd.Series:
-    sma = series.rolling(window=period).mean()
-    std = series.rolling(window=period).std()
-    upper = sma + num_std * std
-    lower = sma - num_std * std
-    band_width = (upper - lower).replace(0, np.nan)
-    return ((series - lower) / band_width).fillna(0.5).clip(0.0, 1.0)
+def _resolve_agent_temperature() -> float:
+    value = _get_env_optional_float("AGENT_LLM_TEMPERATURE", "GEMINI_TEMPERATURE")
+    return value if value is not None else 0.0
 
 
-def _compute_sma_ratio(series: pd.Series, short: int = 7, long: int = 21) -> pd.Series:
-    sma_short = series.rolling(window=short).mean()
-    sma_long = series.rolling(window=long).mean()
-    return ((sma_short / sma_long.replace(0, np.nan)) - 1.0).fillna(0.0)
+def _resolve_agent_top_p() -> float | None:
+    return _get_env_optional_float("AGENT_LLM_TOP_P", "GEMINI_TOP_P")
 
 
-def _compute_volume_ratio(volume: pd.Series, period: int = 24) -> pd.Series:
-    vol_sma = volume.rolling(window=period).mean()
-    return (volume / vol_sma.replace(0, np.nan)).fillna(1.0).clip(0.0, 10.0)
-
+def _resolve_agent_top_k() -> int | None:
+    return _get_env_optional_int("AGENT_LLM_TOP_K", "GEMINI_TOP_K")
 
 def _remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
     if len(series) < 2:
@@ -115,13 +102,13 @@ def _remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
 def _ts_to_utc_iso(ts: pd.Timestamp) -> str:
     ts = pd.Timestamp(ts)
     ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-    return ts_utc.isoformat()
+    return str(ts_utc.isoformat())
 
 
 def _ts_to_brt_iso(ts: pd.Timestamp) -> str:
     ts = pd.Timestamp(ts)
     ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-    return ts_utc.tz_convert(ZoneInfo(BRASILIA_TZ)).isoformat()
+    return str(ts_utc.tz_convert(ZoneInfo(BRASILIA_TZ)).isoformat())
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +127,10 @@ def _fetch_yfinance(ticker: str) -> pd.DataFrame:
             df = df.xs(ticker, axis=1, level=1)
         except KeyError:
             df.columns = df.columns.get_level_values(0)
+
+    if isinstance(df, pd.Series):
+        df = df.to_frame(name="Close")
+
     return df
 
 
@@ -196,7 +187,7 @@ def _download_market_data(ticker: str) -> tuple[pd.DataFrame, str]:
 # ---------------------------------------------------------------------------
 
 
-def _make_tools(ml_artifacts: dict[str, Any]) -> list:
+def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
     """Cria e retorna as 3 ferramentas LangChain para o agente ReAct."""
 
     # ------------------------------------------------------------------
@@ -226,25 +217,7 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list:
                 ohlcv = df[["Close", "High", "Low", "Volume"]].dropna()
                 ohlcv = _remove_incomplete_hour_candle_df(ohlcv)
 
-                close_col = ohlcv["Close"]
-                log_return = np.log(close_col).diff()
-                rsi = _compute_rsi(close_col) / 100.0
-                macd_sig = _compute_macd_signal(close_col)
-                bb_pct = _compute_bollinger_pct_b(close_col)
-                sma_ratio = _compute_sma_ratio(close_col)
-                vol_ratio = _compute_volume_ratio(ohlcv["Volume"])
-
-                features_df = pd.DataFrame(
-                    {
-                        "log_return": log_return,
-                        "rsi": rsi,
-                        "macd_signal": macd_sig,
-                        "bb_pct_b": bb_pct,
-                        "sma_ratio": sma_ratio,
-                        "vol_ratio": vol_ratio,
-                    },
-                    index=ohlcv.index,
-                ).dropna()
+                features_df = build_feature_matrix(ohlcv)
 
                 if len(features_df) < LOOKBACK:
                     return (
@@ -394,7 +367,7 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list:
     crypto_news_store = None
     crypto_news_error: Exception | None = None
 
-    def _get_crypto_news_store():
+    def _get_crypto_news_store() -> Any:
         nonlocal crypto_news_store, crypto_news_error
         if crypto_news_store is None and crypto_news_error is None:
             try:
@@ -514,7 +487,18 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
     if not google_api_key:
         raise OSError("A variável GOOGLE_API_KEY não está definida.")
 
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0)
+    llm_kwargs: dict[str, Any] = {
+        "model": DEFAULT_AGENT_LLM_MODEL,
+        "temperature": _resolve_agent_temperature(),
+    }
+    top_p = _resolve_agent_top_p()
+    if top_p is not None:
+        llm_kwargs["top_p"] = top_p
+    top_k = _resolve_agent_top_k()
+    if top_k is not None:
+        llm_kwargs["top_k"] = top_k
+
+    llm = ChatGoogleGenerativeAI(**llm_kwargs)
 
     tools = _make_tools(ml_artifacts)
 
@@ -528,7 +512,9 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
     if _LANGFUSE_AVAILABLE and pub_key and sec_key:
         try:
             lf_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
-            langfuse_handler = LangfuseHandler(  # type: ignore[reportPossiblyUnbound]
+            if LangfuseHandler is None:
+                raise RuntimeError("Langfuse indisponível")
+            langfuse_handler = LangfuseHandler(
                 public_key=pub_key,
                 secret_key=sec_key,
                 host=lf_host,

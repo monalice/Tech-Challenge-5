@@ -28,11 +28,42 @@ jobs:
           pip install -r requirements.txt
           pip install ruff mypy bandit pytest pytest-cov
 
+      - name: Optional DVC pull for test data
+        env:
+          DVC_AWS_ACCESS_KEY_ID: ${{ secrets.DVC_AWS_ACCESS_KEY_ID }}
+          DVC_AWS_SECRET_ACCESS_KEY: ${{ secrets.DVC_AWS_SECRET_ACCESS_KEY }}
+          DVC_AWS_SESSION_TOKEN: ${{ secrets.DVC_AWS_SESSION_TOKEN }}
+          DVC_AWS_DEFAULT_REGION: ${{ secrets.DVC_AWS_DEFAULT_REGION }}
+        run: |
+          if [ ! -f dvc.yaml ]; then
+            echo "dvc.yaml não encontrado; seguindo sem dvc pull."
+            exit 0
+          fi
+
+          if [ -z "${DVC_AWS_ACCESS_KEY_ID}" ] || [ -z "${DVC_AWS_SECRET_ACCESS_KEY}" ]; then
+            echo "Credenciais DVC ausentes (PR/fork). Seguindo com fixtures locais versionadas."
+            exit 0
+          fi
+
+          echo "Credenciais DVC detectadas. Executando dvc pull antes dos testes..."
+          pip install dvc[s3]
+          if ! dvc pull; then
+            echo "dvc pull falhou; seguindo com fallback determinístico de testes."
+          fi
+
       - name: Lint (ruff)
         run: ruff check .
 
       - name: Type check (mypy)
-        run: mypy src monitoring
+        run: |
+          mypy \
+            src/app.py \
+            src/train_model.py \
+            src/agent/rag_pipeline.py \
+            src/agent/react_agent.py \
+            src/security/guardrails.py \
+            monitoring/drift_detection.py \
+            --explicit-package-bases
 
       - name: Security scan (bandit)
         run: bandit -r src monitoring -ll

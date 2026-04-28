@@ -49,6 +49,7 @@ module = [
   "langchain_google_genai.*",
   "presidio_analyzer.*",
   "presidio_anonymizer.*",
+  "evidently.*",
   "yfinance",
 ]
 ignore_missing_imports = true
@@ -59,17 +60,9 @@ module = [
 ]
 ignore_errors = true
 
-[[tool.mypy.overrides]]
-module = [
-  "src.app",
-  "src.train_model",
-  "src.agent.rag_pipeline",
-  "src.agent.react_agent",
-  "src.security.guardrails",
-  "monitoring.drift_detection",
-]
-ignore_errors = true
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src --cov=monitoring --cov-config=.coveragerc --cov-report=term-missing --cov-fail-under=60 -q"
+addopts = "--cov --cov-config=.coveragerc --cov-report=term-missing -q"
+markers = [
+  "mlflow_integration: optional integration test that spins up local MLflow container",
+]

@@ -51,20 +51,20 @@ def _extract_real_dataframe(market_df: pd.DataFrame) -> pd.DataFrame:
     return real_df
 
 
-def _build_report_with_psi():
+def _build_report_with_psi() -> Any:
     """Cria Report do Evidently com DataDriftPreset priorizando PSI."""
     try:
-        from evidently.report import Report  # type: ignore
+        from evidently.report import Report
     except Exception:
-        from evidently import Report  # type: ignore
+        from evidently import Report
 
     try:
-        from evidently.metric_preset import DataDriftPreset  # type: ignore
+        from evidently.metric_preset import DataDriftPreset
     except Exception:
-        from evidently.presets import DataDriftPreset  # type: ignore
+        from evidently.presets import DataDriftPreset
 
     try:
-        from evidently.options import DataDriftOptions  # type: ignore
+        from evidently.options import DataDriftOptions
 
         return Report(
             metrics=[DataDriftPreset()],

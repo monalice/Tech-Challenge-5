@@ -2,8 +2,11 @@ import collections
 import json
 import logging
 import os
+import re
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import joblib
@@ -31,7 +34,26 @@ from prometheus_client import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from monitoring.drift_detection import detect_data_drift
+from src.features.technical_features import (
+    build_feature_matrix as _build_feature_matrix,
+)
+from src.features.technical_features import (
+    compute_bollinger_pct_b as _compute_bollinger_pct_b,  # noqa: F401
+)
+from src.features.technical_features import (
+    compute_macd_signal as _compute_macd_signal,  # noqa: F401
+)
+from src.features.technical_features import (
+    compute_rsi as _compute_rsi,  # noqa: F401
+)
+from src.features.technical_features import (
+    compute_sma_ratio as _compute_sma_ratio,  # noqa: F401
+)
+from src.features.technical_features import (
+    compute_volume_ratio as _compute_volume_ratio,  # noqa: F401
+)
 from src.security.guardrails import InputGuardrail, OutputGuardrail
+from src.serving.drift_automation import DriftAutomationConfig, process_drift_result
 
 # --- Logging estruturado ---
 logging.basicConfig(
@@ -43,6 +65,28 @@ logger = logging.getLogger("stockcast")
 
 input_guardrail = InputGuardrail()
 output_guardrail = OutputGuardrail()
+
+PRODUCTION_ENV_NAMES = {"prod", "production"}
+PRODUCTION_ENV_VARIABLES = (
+    "APP_ENV",
+    "ENVIRONMENT",
+    "ENV",
+    "STAGE",
+    "DEPLOY_ENV",
+)
+GOOGLE_API_KEY_PATTERN = re.compile(r"^AIza[A-Za-z0-9_-]{20,}$")
+INSECURE_GOOGLE_API_KEY_VALUES = {
+    "",
+    "your-google-api-key",
+    "changeme",
+    "replace-me",
+    "your_api_key_here",
+    "mock_key_para_testes",
+    "test",
+    "dummy",
+    "none",
+    "null",
+}
 
 
 # --- Schemas ---
@@ -196,7 +240,7 @@ class DriftCheckRequest(BaseModel):
 
 
 # --- Configuração geral ---
-ml_artifacts: dict = {}
+ml_artifacts: dict[str, Any] = {}
 SUPPORTED_TICKER = "BTC-USD"
 LOOKBACK = 60
 MODEL_PATH = "models/lstm_btc_hourly.keras"
@@ -210,11 +254,13 @@ BINANCE_SYMBOL = "BTCUSDT"
 BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_TIMEOUT_SECONDS = 10
 PREDICTIONS_HISTORY_MAX = 100
-market_cache: dict = {}
+market_cache: dict[str, dict[str, Any]] = {}
 BRASILIA_TZ = "America/Sao_Paulo"
 
 # Histórico circular de predições (MLOps)
-prediction_log: collections.deque = collections.deque(maxlen=PREDICTIONS_HISTORY_MAX)
+prediction_log: collections.deque[dict[str, Any]] = collections.deque(
+    maxlen=PREDICTIONS_HISTORY_MAX
+)
 
 # --- Prometheus Metrics ---
 _prom_registry = CollectorRegistry()
@@ -268,54 +314,6 @@ def remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
     return series
 
 
-# --- Indicadores técnicos (espelham train_model.py para inferência multi-feature) ---
-
-
-def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return (100 - (100 / (1 + rs))).fillna(50.0)
-
-
-def _compute_macd_signal(
-    series: pd.Series,
-    fast: int = 12,
-    slow: int = 26,
-    signal: int = 9,
-) -> pd.Series:
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return ((macd_line - signal_line) / series.replace(0, np.nan)).fillna(0.0)
-
-
-def _compute_bollinger_pct_b(
-    series: pd.Series, period: int = 20, num_std: float = 2.0
-) -> pd.Series:
-    sma = series.rolling(window=period).mean()
-    std = series.rolling(window=period).std()
-    upper = sma + num_std * std
-    lower = sma - num_std * std
-    band_width = (upper - lower).replace(0, np.nan)
-    return ((series - lower) / band_width).fillna(0.5).clip(0.0, 1.0)
-
-
-def _compute_sma_ratio(series: pd.Series, short: int = 7, long: int = 21) -> pd.Series:
-    sma_short = series.rolling(window=short).mean()
-    sma_long = series.rolling(window=long).mean()
-    return ((sma_short / sma_long.replace(0, np.nan)) - 1.0).fillna(0.0)
-
-
-def _compute_volume_ratio(volume: pd.Series, period: int = 24) -> pd.Series:
-    vol_sma = volume.rolling(window=period).mean()
-    return (volume / vol_sma.replace(0, np.nan)).fillna(1.0).clip(0.0, 10.0)
-
-
 def get_cached_market_data(ticker: str) -> pd.DataFrame | None:
     cache_entry = market_cache.get(ticker)
     if not cache_entry:
@@ -328,7 +326,7 @@ def get_cached_market_data(ticker: str) -> pd.DataFrame | None:
     return cache_entry["data"].copy()
 
 
-def set_cached_market_data(ticker: str, data: pd.DataFrame, source: str):
+def set_cached_market_data(ticker: str, data: pd.DataFrame, source: str) -> None:
     market_cache[ticker] = {"cached_at": time.time(), "data": data.copy(), "source": source}
 
 
@@ -336,23 +334,23 @@ def get_cached_source(ticker: str) -> str:
     entry = market_cache.get(ticker)
     if not entry:
         return "unknown"
-    return entry.get("source", "unknown")
+    return str(entry.get("source", "unknown"))
 
 
 def timestamp_to_utc_iso(ts: pd.Timestamp) -> str:
     ts = pd.Timestamp(ts)
     ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-    return ts_utc.isoformat()
+    return str(ts_utc.isoformat())
 
 
 def timestamp_to_brt_iso(ts: pd.Timestamp) -> str:
     ts = pd.Timestamp(ts)
     ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-    return ts_utc.tz_convert(ZoneInfo(BRASILIA_TZ)).isoformat()
+    return str(ts_utc.tz_convert(ZoneInfo(BRASILIA_TZ)).isoformat())
 
 
 def estimate_uncertainty(
-    predicted_price: float, metadata: dict
+    predicted_price: float, metadata: dict[str, Any]
 ) -> tuple[float | None, ConfidenceIntervalResponse | None]:
     metrics = metadata.get("metrics", {}) if isinstance(metadata, dict) else {}
 
@@ -379,7 +377,32 @@ def estimate_uncertainty(
     return estimated_error_pct, ci
 
 
-def load_trained_model(model_path: str):
+def is_production_environment() -> bool:
+    for env_var in PRODUCTION_ENV_VARIABLES:
+        value = os.getenv(env_var)
+        if value and value.strip().lower() in PRODUCTION_ENV_NAMES:
+            return True
+    return False
+
+
+def validate_google_api_key_for_startup() -> None:
+    if not is_production_environment():
+        return
+
+    api_key = (os.getenv("GOOGLE_API_KEY") or "").strip()
+    if api_key.lower() in INSECURE_GOOGLE_API_KEY_VALUES:
+        raise RuntimeError(
+            "GOOGLE_API_KEY inválida para produção. Configure uma chave real e segura."
+        )
+
+    if not GOOGLE_API_KEY_PATTERN.fullmatch(api_key):
+        raise RuntimeError(
+            "GOOGLE_API_KEY com formato inválido para produção. "
+            "Use uma chave válida do provedor antes de iniciar a API."
+        )
+
+
+def load_trained_model(model_path: str) -> Any:
     keras_module = getattr(tf, "keras", None)
     if keras_module is None or not hasattr(keras_module, "models"):
         raise RuntimeError("TensorFlow/Keras indisponível para carregar o modelo")
@@ -400,6 +423,9 @@ def _download_from_yfinance(ticker: str) -> pd.DataFrame:
             df = df.xs(ticker, axis=1, level=1)
         except KeyError:
             df.columns = df.columns.get_level_values(0)
+
+    if isinstance(df, pd.Series):
+        df = df.to_frame(name="Close")
 
     return df
 
@@ -482,8 +508,8 @@ def download_with_retry(ticker: str) -> tuple[pd.DataFrame, str]:
 
 
 # --- Health checks ---
-def perform_health_checks() -> dict:
-    model = ml_artifacts.get("model")
+def perform_health_checks() -> dict[str, Any]:
+    model: Any | None = ml_artifacts.get("model")
     scaler = ml_artifacts.get("scaler")
 
     artifacts_ready = model is not None and scaler is not None
@@ -499,6 +525,8 @@ def perform_health_checks() -> dict:
             metadata_check = ml_artifacts.get("metadata", {})
             n_features = metadata_check.get("n_features", 1)
             sample_input = np.zeros((1, LOOKBACK, n_features), dtype=np.float32)
+            if model is None:
+                raise ValueError("Modelo indisponível")
             prediction = model.predict(sample_input, verbose=0)
             if prediction is None or len(prediction) == 0:
                 raise ValueError("Predição vazia do modelo")
@@ -547,7 +575,8 @@ def perform_health_checks() -> dict:
 
 # --- Lifecycle ---
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    validate_google_api_key_for_startup()
     logger.info("Carregando modelo LSTM Hourly e scaler...")
     try:
         ml_artifacts["model"] = load_trained_model(MODEL_PATH)
@@ -588,7 +617,7 @@ app = FastAPI(title="Bitcoin Hourly Forecaster", version="3.0.0", lifespan=lifes
     summary="Liveness da API",
     description="Endpoint leve para healthcheck de container, sem consulta externa.",
 )
-def live_check():
+def live_check() -> dict[str, Any]:
     artifacts_ready = "model" in ml_artifacts and "scaler" in ml_artifacts
     return {"status": "alive", "artifacts_ready": artifacts_ready}
 
@@ -603,7 +632,7 @@ def live_check():
         "Retorna timestamps em UTC e Brasília."
     ),
 )
-def health_check():
+def health_check() -> dict[str, Any]:
     return perform_health_checks()
 
 
@@ -618,7 +647,7 @@ def health_check():
         "uso de fontes de dados e métricas de recursos do sistema."
     ),
 )
-def prometheus_metrics():
+def prometheus_metrics() -> PlainTextResponse:
     METRIC_CPU.set(psutil.cpu_percent())
     METRIC_MEMORY.set(psutil.virtual_memory().percent)
     return PlainTextResponse(
@@ -637,7 +666,7 @@ def prometheus_metrics():
         "comparação de previsões com valores reais."
     ),
 )
-def predictions_history():
+def predictions_history() -> dict[str, Any]:
     entries = list(reversed(prediction_log))
     return {"total_logged": len(entries), "predictions": entries}
 
@@ -652,7 +681,7 @@ def predictions_history():
 )
 async def check_drift(
     request: DriftCheckRequest = Body(default_factory=DriftCheckRequest),  # noqa: B008
-):
+) -> dict[str, Any]:
     """Executa a checagem assíncrona de drift.
 
     Este endpoint deve ser chamado por um EventBridge/Cronjob na AWS para automacao do MLOps.
@@ -663,16 +692,13 @@ async def check_drift(
         prediction_log=prediction_log,
     )
 
-    if result.get("status") == "ok" and "psi" in result:
-        try:
-            with mlflow.start_run(run_name="drift_check", nested=True):
-                mlflow.log_metric("psi_btc_usd", float(result["psi"]))
-                mlflow.set_tag("drift_status", result["status"])
-                mlflow.set_tag("rows_compared", str(result.get("rows_compared", 0)))
-        except Exception as drift_log_exc:
-            logger.warning("Falha ao logar drift no MLflow: %s", drift_log_exc)
+    automation_summary = process_drift_result(
+        result,
+        DriftAutomationConfig.from_sources(),
+        mlflow_module=mlflow,
+    )
 
-    return result
+    return {**result, "automation": automation_summary}
 
 
 @app.post(
@@ -706,7 +732,7 @@ def predict_next_hour(
             },
         },
     ),  # noqa: B008
-):
+) -> dict[str, Any]:
     start_proc = time.perf_counter()
     ticker = request.ticker.upper()
 
@@ -758,26 +784,8 @@ def predict_next_hour(
             if not request.use_partial_candle:
                 ohlcv = ohlcv.loc[close_series.index]
 
-            # Indicadores técnicos (mesmas fórmulas do treino)
-            close_col = ohlcv["Close"]
-            log_return = np.log(close_col).diff()
-            rsi = _compute_rsi(close_col, 14) / 100.0
-            macd_sig = _compute_macd_signal(close_col)
-            bb_pct = _compute_bollinger_pct_b(close_col)
-            sma_ratio = _compute_sma_ratio(close_col)
-            vol_ratio = _compute_volume_ratio(ohlcv["Volume"])
-
-            features_df = pd.DataFrame(
-                {
-                    "log_return": log_return,
-                    "rsi": rsi,
-                    "macd_signal": macd_sig,
-                    "bb_pct_b": bb_pct,
-                    "sma_ratio": sma_ratio,
-                    "vol_ratio": vol_ratio,
-                },
-                index=ohlcv.index,
-            ).dropna()
+            # Reuso do cálculo compartilhado de features técnicas.
+            features_df = _build_feature_matrix(ohlcv)
 
             if len(features_df) < LOOKBACK:
                 raise HTTPException(
@@ -912,7 +920,7 @@ def predict_next_hour(
         "(contexto de mercado simulado). Requer a variável de ambiente GOOGLE_API_KEY."
     ),
 )
-def chat(request: ChatRequest):
+def chat(request: ChatRequest) -> dict[str, Any]:
     """Endpoint de chat com o Agente ReAct LangChain."""
     input_validation = input_guardrail.validate(request.message)
     if not input_validation.allowed:
@@ -933,7 +941,7 @@ def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"Erro no agente: {exc}") from exc
 
     # Extrair passos intermediários
-    steps: list[dict] = []
+    steps: list[dict[str, str]] = []
     for action, observation in result.get("intermediate_steps", []):
         steps.append(
             {

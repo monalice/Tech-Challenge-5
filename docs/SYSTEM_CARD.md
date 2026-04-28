@@ -38,13 +38,14 @@ Com base no Terraform atual, a arquitetura AWS inclui:
 
 ## Agente ReAct
 
-O agente usa `ChatGoogleGenerativeAI` com `gemini-2.5-pro` e temperatura `0`. Ele orquestra ferramentas para responder perguntas sobre previsão, preço atual e contexto de mercado.
+O agente usa `ChatGoogleGenerativeAI` com modelo configurável via `.env` (default: **`gemini-2.5-flash`** para free tier) e temperatura `0` (determinístico). A resolução de modelo segue cadeia: `AGENT_LLM_MODEL` (env) → `GEMINI_LLM_MODEL` (env) → hardcoded `gemini-2.5-flash`. Embeddings usam `gemini-embedding-001` (dimensão 3072, free tier). O agente orquestra ferramentas para responder perguntas sobre previsão, preço atual e contexto de mercado.
 
 Ferramentas relevantes:
 
 - `PrevisaoBitcoinTool`
 - `CotacaoAtualTool`
-- `CryptoKnowledgeRAG`
+- `CryptoKnowledgeRAG` (com `GoogleGenerativeAIEmbeddings`)
+- Temperatura e parâmetros de sampling via `.env` (overrides: `AGENT_LLM_TEMPERATURE`, `AGENT_LLM_TOP_P`, `AGENT_LLM_TOP_K`)
 
 ## Guardrails
 

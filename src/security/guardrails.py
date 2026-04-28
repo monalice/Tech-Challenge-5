@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
@@ -65,11 +66,11 @@ class OutputGuardrail:
         self._analyzer: AnalyzerEngine | None = None
         self._anonymizer: AnonymizerEngine | None = None
 
-    def _ensure_engines(self):
+    def _ensure_engines(self) -> None:
         if self._analyzer is None:
             self._analyzer = AnalyzerEngine()
         if self._anonymizer is None:
-            self._anonymizer = AnonymizerEngine()
+            self._anonymizer = AnonymizerEngine()  # type: ignore[no-untyped-call]
 
     @staticmethod
     def _regex_fallback_mask(text: str) -> str:
@@ -87,10 +88,13 @@ class OutputGuardrail:
         if not text:
             return text
 
-        analyzer_results = []
+        analyzer_results: list[Any] = []
         try:
             self._ensure_engines()
-            analyzer_results = self._analyzer.analyze(
+            if self._analyzer is None:
+                return self._regex_fallback_mask(text)
+            analyzer: Any = self._analyzer
+            analyzer_results = analyzer.analyze(
                 text=text,
                 language="en",
                 score_threshold=self.score_threshold,
@@ -101,7 +105,10 @@ class OutputGuardrail:
         if not analyzer_results:
             return self._regex_fallback_mask(text)
 
-        anonymized_result = self._anonymizer.anonymize(
+        if self._anonymizer is None:
+            return self._regex_fallback_mask(text)
+        anonymizer: Any = self._anonymizer
+        anonymized_result = anonymizer.anonymize(
             text=text,
             analyzer_results=analyzer_results,
         )

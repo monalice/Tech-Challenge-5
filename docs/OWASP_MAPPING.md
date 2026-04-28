@@ -84,6 +84,21 @@ Mitigação parcial no código:
 - [src/app.py](src/app.py): fallback de mercado entre Yahoo Finance e Binance
 - [infra/terraform/main.tf](infra/terraform/main.tf): segredos armazenados em Secrets Manager
 
+## 7. Secrets Management e Exposição Acidental em Commit
+
+Risco:
+Segredos reais podem ser expostos por commit acidental em `.env`, logs de execução ou artefatos binários.
+
+Mitigação no código e no processo:
+
+- [src/app.py](src/app.py): fail-fast de startup em produção para `GOOGLE_API_KEY` ausente, placeholder ou formato inválido
+- [.pre-commit-config.yaml](.pre-commit-config.yaml): hooks de detecção (`detect-private-key`, `detect-secrets`) e checklist local de segurança
+- [scripts/pre_commit_security_check.py](scripts/pre_commit_security_check.py): bloqueia commit de `.env`, logs, `mlruns/` e artefatos binários em `models/`, além de varredura por padrões de segredo
+
+Lacuna residual:
+
+- o controle de pre-commit protege o fluxo local, mas não substitui varredura de segredos no CI/CD e rotação de credenciais comprometidas
+
 ## Resumo de Cobertura
 
 Mitigações já implementadas cobrem melhor:
@@ -99,3 +114,4 @@ Mitigações ainda maduras apenas parcialmente:
 - hardening de supply chain
 - autorização detalhada de ferramentas
 - validação robusta de outputs de ferramentas
+- varredura obrigatória de segredos no CI/CD (com política de bloqueio em PR)

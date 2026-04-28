@@ -4,13 +4,18 @@ import os
 import subprocess
 import tempfile
 import time
+from typing import Any
 
 import joblib
 import mlflow
 import mlflow.keras
 import numpy as np
 import pandas as pd
+import pandera as pa
 import requests
+import yaml  # type: ignore[import-untyped]
+from numpy.typing import NDArray
+from pandera import Check
 
 # IMPORTANTE (Windows): tensorflow e yfinance devem ser importados antes de pandas
 # para evitar conflito de DLL que causa crash (exit code -1073741819)
@@ -23,6 +28,8 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.layers import LSTM, Bidirectional, Dense, Dropout
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.optimizers import Adam
+
+from src.features.technical_features import FEATURE_COLUMNS, build_feature_matrix as _build_feature_matrix
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -60,11 +67,143 @@ MODEL_META_PATH = "models/model_metadata_btc.json"
 MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "btc-hourly-forecast")
 MLFLOW_ARTIFACT_URI = os.getenv("MLFLOW_ARTIFACT_URI")
 
-TAG_MODEL_NAME = os.getenv("MLFLOW_MODEL_NAME", "btc_hourly_forecaster")
+MLFLOW_MODEL_NAME = os.getenv("MLFLOW_MODEL_NAME", "btc_hourly_forecaster")
 TAG_MODEL_VERSION = os.getenv("MLFLOW_MODEL_VERSION", "v1")
 TAG_OWNER = os.getenv("MLFLOW_OWNER", "ml-team")
 TAG_RISK_LEVEL = os.getenv("MLFLOW_RISK_LEVEL", "medium")
-TAG_TRAINING_DATA_VERSION = os.getenv("MLFLOW_TRAINING_DATA_VERSION", "models/btc_hourly_cache.csv")
+DVC_LOCK_PATH = "dvc.lock"
+FAIRNESS_ARTIFACT_PATH = os.getenv(
+    "MLFLOW_FAIRNESS_ARTIFACT_PATH",
+    "evaluation/fairness_report.json",
+)
+
+REQUIRED_MLFLOW_METADATA_SCHEMA: dict[str, type[Any]] = {
+    "model_name": str,
+    "model_version": str,
+    "model_type": str,
+    "training_data_version": str,
+    "owner": str,
+    "risk_level": str,
+    "fairness_checked": bool,
+    "git_sha": str,
+}
+
+REQUIRED_RAW_COLUMNS = ["Close", "High", "Low", "Volume"]
+REQUIRED_FEATURE_COLUMNS = [
+    *FEATURE_COLUMNS,
+]
+
+RAW_DATA_SCHEMA = pa.DataFrameSchema(  # type: ignore[no-untyped-call]
+    {
+        "Close": pa.Column(float, nullable=False, checks=[Check.gt(0)]),
+        "High": pa.Column(float, nullable=False, checks=[Check.gt(0)]),
+        "Low": pa.Column(float, nullable=False, checks=[Check.gt(0)]),
+        "Volume": pa.Column(float, nullable=False, checks=[Check.ge(0)]),
+    },
+    checks=[
+        Check(lambda df: (df["High"] >= df["Low"]).all(), error="High deve ser >= Low."),
+        Check(
+            lambda df: ((df["Close"] >= df["Low"]) & (df["Close"] <= df["High"]))
+            .all(),
+            error="Close deve estar entre Low e High.",
+        ),
+    ],
+    strict=True,
+    coerce=True,
+)
+
+FEATURE_DATA_SCHEMA = pa.DataFrameSchema(  # type: ignore[no-untyped-call]
+    {
+        "log_return": pa.Column(float, nullable=False, checks=[Check.in_range(-1.0, 1.0)]),
+        "rsi": pa.Column(float, nullable=False, checks=[Check.in_range(0.0, 1.0)]),
+        "macd_signal": pa.Column(float, nullable=False, checks=[Check.in_range(-2.0, 2.0)]),
+        "bb_pct_b": pa.Column(float, nullable=False, checks=[Check.in_range(0.0, 1.0)]),
+        "sma_ratio": pa.Column(float, nullable=False, checks=[Check.in_range(-1.0, 1.0)]),
+        "vol_ratio": pa.Column(float, nullable=False, checks=[Check.in_range(0.0, 10.0)]),
+    },
+    strict=True,
+    coerce=True,
+)
+
+
+def validate_temporal_consistency(index: pd.Index, expected_frequency: str = "1h") -> None:
+    if not isinstance(index, pd.DatetimeIndex):
+        raise ValueError("Índice temporal inválido: esperado DatetimeIndex.")
+
+    if index.tz is None:
+        raise ValueError("Índice temporal inválido: timezone obrigatório (UTC recomendado).")
+
+    if not index.is_monotonic_increasing:
+        raise ValueError("Consistência temporal inválida: índice deve estar ordenado.")
+
+    if index.has_duplicates:
+        raise ValueError("Consistência temporal inválida: timestamps duplicados detectados.")
+
+    deltas = index.to_series().diff().dropna()
+    if deltas.empty:
+        return
+
+    expected_delta = pd.Timedelta(expected_frequency)
+    inconsistent_steps = deltas[deltas != expected_delta]
+    if not inconsistent_steps.empty:
+        raise ValueError(
+            "Consistência temporal inválida: frequência horária irregular detectada. "
+            f"Esperado: {expected_delta}, encontrados {inconsistent_steps.nunique()} intervalos distintos."
+        )
+
+
+def validate_raw_training_data(data: pd.DataFrame) -> pd.DataFrame:
+    try:
+        validated_data = RAW_DATA_SCHEMA.validate(data, lazy=True)
+    except pa.errors.SchemaErrors as error:
+        raise ValueError(f"Validação de dados brutos falhou: {error}") from error
+
+    validate_temporal_consistency(validated_data.index)
+    return validated_data
+
+
+def validate_feature_training_data(features: pd.DataFrame) -> pd.DataFrame:
+    try:
+        validated_features = FEATURE_DATA_SCHEMA.validate(features, lazy=True)
+    except pa.errors.SchemaErrors as error:
+        raise ValueError(f"Validação de features falhou: {error}") from error
+
+    validate_temporal_consistency(validated_features.index)
+    return validated_features
+
+
+def validate_mlflow_metadata_tags(tags: dict[str, Any], context: str) -> dict[str, Any]:
+    """Valida schema obrigatório de metadata para runs e modelos no MLflow."""
+    validated = dict(tags)
+
+    missing_fields = [field for field in REQUIRED_MLFLOW_METADATA_SCHEMA if field not in validated]
+    if missing_fields:
+        raise ValueError(
+            f"Schema de metadata MLflow inválido ({context}): campos ausentes: {missing_fields}"
+        )
+
+    invalid_fields: list[str] = []
+    for field, expected_type in REQUIRED_MLFLOW_METADATA_SCHEMA.items():
+        value = validated.get(field)
+        if value is None:
+            invalid_fields.append(f"{field}=None")
+            continue
+
+        if expected_type is str and str(value).strip() == "":
+            invalid_fields.append(f"{field}=<empty>")
+            continue
+
+        if not isinstance(value, expected_type):
+            invalid_fields.append(
+                f"{field} (esperado {expected_type.__name__}, recebido {type(value).__name__})"
+            )
+
+    if invalid_fields:
+        raise ValueError(
+            f"Schema de metadata MLflow inválido ({context}): campos inválidos: {invalid_fields}"
+        )
+
+    return validated
 
 
 def get_git_sha() -> str:
@@ -81,12 +220,124 @@ def get_git_sha() -> str:
         return "unknown"
 
 
-def ensure_directories():
+def get_git_sha_required() -> str:
+    git_sha = get_git_sha()
+    if git_sha == "unknown":
+        raise RuntimeError(
+            "Falha ao capturar git SHA para lineage imutavel de dados/modelo."
+        )
+    return git_sha
+
+
+def _normalize_repo_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./")
+
+
+def _get_dvc_output_hash(dataset_path: str, dvc_lock_path: str = DVC_LOCK_PATH) -> str:
+    if not os.path.exists(dvc_lock_path):
+        raise RuntimeError(
+            f"Arquivo '{dvc_lock_path}' ausente. Nao foi possivel capturar hash DVC do dataset."
+        )
+
+    with open(dvc_lock_path, encoding="utf-8") as dvc_lock_file:
+        lock_data = yaml.safe_load(dvc_lock_file) or {}
+
+    stages = lock_data.get("stages")
+    if not isinstance(stages, dict):
+        raise RuntimeError(
+            "Estrutura invalida em dvc.lock: campo 'stages' ausente ou invalido."
+        )
+
+    normalized_dataset_path = _normalize_repo_path(dataset_path)
+    for stage_data in stages.values():
+        if not isinstance(stage_data, dict):
+            continue
+        outs = stage_data.get("outs", [])
+        if not isinstance(outs, list):
+            continue
+
+        for out in outs:
+            if not isinstance(out, dict):
+                continue
+
+            out_path = out.get("path")
+            if not isinstance(out_path, str):
+                continue
+            if _normalize_repo_path(out_path) != normalized_dataset_path:
+                continue
+
+            hash_name = out.get("hash")
+            if not isinstance(hash_name, str):
+                raise RuntimeError(
+                    f"Output '{out_path}' em dvc.lock sem campo 'hash' valido."
+                )
+
+            hash_value = out.get(hash_name)
+            if not isinstance(hash_value, str) or not hash_value.strip():
+                raise RuntimeError(
+                    f"Output '{out_path}' em dvc.lock sem valor de hash '{hash_name}'."
+                )
+
+            return hash_value.strip()
+
+    raise RuntimeError(
+        f"Dataset '{dataset_path}' nao encontrado em dvc.lock para capturar hash DVC."
+    )
+
+
+def build_training_data_lineage(
+    dataset_path: str = CACHE_DATA_PATH,
+    dvc_lock_path: str = DVC_LOCK_PATH,
+) -> dict[str, str]:
+    git_sha = get_git_sha_required()
+    dvc_data_hash = _get_dvc_output_hash(dataset_path=dataset_path, dvc_lock_path=dvc_lock_path)
+    # Em DVC, a revisao de dados e normalmente o commit Git que referencia o lockfile.
+    dvc_data_rev = git_sha
+    return {
+        "git_sha": git_sha,
+        "dvc_data_rev": dvc_data_rev,
+        "dvc_data_hash": dvc_data_hash,
+        "training_data_version": f"{dvc_data_rev}:{dvc_data_hash}",
+    }
+
+
+def get_fairness_artifact_status(
+    fairness_artifact_path: str = FAIRNESS_ARTIFACT_PATH,
+) -> dict[str, Any]:
+    if not os.path.exists(fairness_artifact_path):
+        return {
+            "fairness_checked": False,
+            "artifact_path": fairness_artifact_path,
+            "status": "missing",
+            "alert": f"missing_fairness_artifact:{fairness_artifact_path}",
+        }
+
+    try:
+        with open(fairness_artifact_path, encoding="utf-8") as fairness_file:
+            json.load(fairness_file)
+    except Exception as error:
+        return {
+            "fairness_checked": False,
+            "artifact_path": fairness_artifact_path,
+            "status": "invalid",
+            "alert": f"invalid_fairness_artifact:{fairness_artifact_path}",
+            "error": str(error),
+        }
+
+    return {
+        "fairness_checked": True,
+        "artifact_path": fairness_artifact_path,
+        "status": "valid",
+        "alert": "",
+    }
+
+
+def ensure_directories() -> None:
     if not os.path.exists("models"):
         os.makedirs("models")
 
 
-def configure_mlflow():
+def configure_mlflow() -> None:
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     if not tracking_uri:
         raise OSError(
@@ -116,23 +367,40 @@ def configure_mlflow():
     mlflow.set_experiment(experiment_name=MLFLOW_EXPERIMENT_NAME)
 
 
-MODEL_NAME = "btc-lstm-hourly"
 CHAMPION_METRIC = "mae_price"  # métrica usada na comparação champion-challenger
 MIN_IMPROVEMENT = 0.005  # melhoria mínima de 0,5 % para promover challenger
+PROMOTION_APPROVAL_ENV_VAR = "MLFLOW_PROMOTION_APPROVED"
+PROMOTION_ADMIN_COMMAND_ENV_VAR = "MLFLOW_ADMIN_COMMAND"
+CHAMPION_ALIAS = os.getenv("MLFLOW_CHAMPION_ALIAS", "champion")
+CANDIDATE_ALIAS = os.getenv("MLFLOW_CANDIDATE_ALIAS", "candidate")
+
+
+def _is_alias_not_found_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return "alias" in message and ("not found" in message or "does not exist" in message)
+
+
+def resolve_champion_version(*, client: Any) -> Any | None:
+    try:
+        return client.get_model_version_by_alias(MLFLOW_MODEL_NAME, CHAMPION_ALIAS)
+    except Exception as exc:
+        if _is_alias_not_found_error(exc):
+            return None
+        raise
 
 
 def evaluate_champion_challenger(challenger_mae: float) -> bool:
     """Compara challenger com champion. Retorna True se challenger deve ser promovido."""
     client = mlflow.MlflowClient()
     try:
-        production_versions = client.get_latest_versions(MODEL_NAME, stages=["Production"])
-        if not production_versions:
+        champion_version = resolve_champion_version(client=client)
+        if champion_version is None:
             logger.info(
-                "Sem champion em Production. Challenger será promovido automaticamente."
+                "Sem champion definido por alias '%s'. Challenger será promovido automaticamente.",
+                CHAMPION_ALIAS,
             )
             return True
 
-        champion_version = production_versions[0]
         champion_run = client.get_run(champion_version.run_id)
         champion_mae = float(champion_run.data.metrics.get(CHAMPION_METRIC, float("inf")))
 
@@ -151,47 +419,168 @@ def evaluate_champion_challenger(challenger_mae: float) -> bool:
 
 
 def promote_to_production(registered_model_version: str) -> None:
-    """Promove a vers\u00e3o do challenger para Production e arquiva o champion anterior."""
+    """Promove challenger via alias champion e marca o champion anterior como arquivado."""
     client = mlflow.MlflowClient()
-    # Arquiva champion atual (se existir)
-    for mv in client.get_latest_versions(MODEL_NAME, stages=["Production"]):
-        client.transition_model_version_stage(
-            name=MODEL_NAME,
-            version=mv.version,
-            stage="Archived",
+    previous_champion = resolve_champion_version(client=client)
+    if previous_champion is not None and str(previous_champion.version) != str(registered_model_version):
+        client.set_model_version_tag(
+            name=MLFLOW_MODEL_NAME,
+            version=previous_champion.version,
+            key="lifecycle_state",
+            value="archived",
         )
-        logger.info("Champion anterior arquivado (vers\u00e3o %s).", mv.version)
+        client.set_model_version_tag(
+            name=MLFLOW_MODEL_NAME,
+            version=previous_champion.version,
+            key="champion_replaced_by",
+            value=str(registered_model_version),
+        )
+        logger.info("Champion anterior marcado como arquivado (versao %s).", previous_champion.version)
 
-    client.transition_model_version_stage(
-        name=MODEL_NAME,
+    client.set_registered_model_alias(
+        name=MLFLOW_MODEL_NAME,
+        alias=CHAMPION_ALIAS,
         version=registered_model_version,
-        stage="Production",
     )
-    logger.info("Challenger promovido a Production (vers\u00e3o %s).", registered_model_version)
-
-
-def archive_challenger(registered_model_version: str) -> None:
-    """Arquiva o challenger que n\u00e3o superou o champion."""
-    client = mlflow.MlflowClient()
-    client.transition_model_version_stage(
-        name=MODEL_NAME,
+    client.set_model_version_tag(
+        name=MLFLOW_MODEL_NAME,
         version=registered_model_version,
-        stage="Staging",
+        key="lifecycle_state",
+        value="champion",
     )
     logger.info(
-        "Champion mantido. Challenger arquivado como Staging (versão %s).",
+        "Challenger promovido por alias '%s' (versao %s).",
+        CHAMPION_ALIAS,
         registered_model_version,
     )
 
 
-def log_training_artifacts(model, scaler_all, scaler_return, metadata):
+def is_manual_promotion_approved(challenger_version: str) -> bool:
+    approval_raw = os.getenv(PROMOTION_APPROVAL_ENV_VAR, "").strip().lower()
+    command_raw = os.getenv(PROMOTION_ADMIN_COMMAND_ENV_VAR, "").strip().lower()
+
+    approved_by_env = approval_raw in {"1", "true", "yes", "approved"}
+
+    approved_by_command = False
+    if command_raw:
+        if ":" in command_raw:
+            action, command_version = command_raw.split(":", 1)
+            approved_by_command = action in {"promote", "approve"} and command_version.strip() in {
+                str(challenger_version),
+                "*",
+            }
+        else:
+            approved_by_command = command_raw in {"promote", "approve"}
+
+    if approved_by_env:
+        logger.info(
+            "Gate de promocao aprovado via variavel de ambiente %s.",
+            PROMOTION_APPROVAL_ENV_VAR,
+        )
+
+    if approved_by_command:
+        logger.info(
+            "Gate de promocao aprovado via comando administrativo em %s='%s'.",
+            PROMOTION_ADMIN_COMMAND_ENV_VAR,
+            command_raw,
+        )
+
+    if not approved_by_env and not approved_by_command:
+        logger.info(
+            "Promocao bloqueada: defina %s=true ou %s=promote[:versao] para aprovacao explicita.",
+            PROMOTION_APPROVAL_ENV_VAR,
+            PROMOTION_ADMIN_COMMAND_ENV_VAR,
+        )
+
+    return approved_by_env or approved_by_command
+
+
+def mark_challenger_as_candidate(registered_model_version: str, reason: str) -> None:
+    client = mlflow.MlflowClient()
+    client.set_registered_model_alias(
+        name=MLFLOW_MODEL_NAME,
+        alias=CANDIDATE_ALIAS,
+        version=registered_model_version,
+    )
+    client.set_model_version_tag(
+        name=MLFLOW_MODEL_NAME,
+        version=registered_model_version,
+        key="lifecycle_state",
+        value="candidate",
+    )
+    client.set_model_version_tag(
+        name=MLFLOW_MODEL_NAME,
+        version=registered_model_version,
+        key="promotion_gate",
+        value="manual_approval_required",
+    )
+    client.set_model_version_tag(
+        name=MLFLOW_MODEL_NAME,
+        version=registered_model_version,
+        key="candidate_reason",
+        value=reason,
+    )
+    logger.info(
+        "Challenger salvo como candidato no alias '%s' (versao %s). Motivo: %s",
+        CANDIDATE_ALIAS,
+        registered_model_version,
+        reason,
+    )
+
+
+def handle_champion_challenger_outcome(challenger_version: str, challenger_mae: float) -> str:
+    challenger_beats_champion = evaluate_champion_challenger(challenger_mae=challenger_mae)
+    if challenger_beats_champion:
+        if is_manual_promotion_approved(challenger_version=challenger_version):
+            promote_to_production(challenger_version)
+            return "promoted"
+
+        mark_challenger_as_candidate(
+            challenger_version,
+            reason="metric_gate_passed_manual_approval_pending",
+        )
+        return "candidate_pending_approval"
+
+    mark_challenger_as_candidate(
+        challenger_version,
+        reason="metric_gate_not_passed",
+    )
+    return "candidate_not_promoted"
+
+
+def archive_challenger(registered_model_version: str) -> None:
+    """Mantem challenger como candidato quando nao supera champion."""
+    client = mlflow.MlflowClient()
+    client.set_registered_model_alias(
+        name=MLFLOW_MODEL_NAME,
+        alias=CANDIDATE_ALIAS,
+        version=registered_model_version,
+    )
+    client.set_model_version_tag(
+        name=MLFLOW_MODEL_NAME,
+        version=registered_model_version,
+        key="lifecycle_state",
+        value="candidate",
+    )
+    logger.info(
+        "Champion mantido. Challenger marcado como candidato no alias '%s' (versao %s).",
+        CANDIDATE_ALIAS,
+        registered_model_version,
+    )
+
+
+def log_training_artifacts(
+    model: Any,
+    scaler_all: Any,
+    scaler_return: Any,
+    metadata: dict[str, Any],
+    metadata_tags: dict[str, Any],
+) -> str:
     with tempfile.TemporaryDirectory(prefix="mlflow_artifacts_") as temp_dir:
-        model_file = os.path.join(temp_dir, "lstm_btc_hourly.keras")
         scaler_file = os.path.join(temp_dir, "scaler_btc.gz")
         scaler_return_file = os.path.join(temp_dir, "scaler_btc_return.gz")
         metadata_file = os.path.join(temp_dir, "model_metadata_btc.json")
 
-        model.save(model_file)
         joblib.dump(scaler_all, scaler_file)
         joblib.dump(scaler_return, scaler_return_file)
 
@@ -199,7 +588,6 @@ def log_training_artifacts(model, scaler_all, scaler_return, metadata):
             json.dump(metadata, meta_file, indent=2, ensure_ascii=False)
 
         mlflow.keras.log_model(model, artifact_path="model")
-        mlflow.log_artifact(model_file, artifact_path="model")
         mlflow.log_artifact(scaler_file, artifact_path="scalers")
         mlflow.log_artifact(scaler_return_file, artifact_path="scalers")
         mlflow.log_artifact(metadata_file, artifact_path="metadata")
@@ -209,14 +597,14 @@ def log_training_artifacts(model, scaler_all, scaler_return, metadata):
             raise RuntimeError("Nenhuma run ativa encontrada para registrar o modelo no Registry.")
 
         model_uri = f"runs:/{active_run.info.run_id}/model"
+        validated_registry_tags = validate_mlflow_metadata_tags(
+            metadata_tags,
+            context="model_registry",
+        )
         registered_model = mlflow.register_model(
             model_uri=model_uri,
-            name=MODEL_NAME,
-            tags={
-                "stage": "challenger",
-                "training_data_version": TAG_TRAINING_DATA_VERSION,
-                "git_sha": get_git_sha(),
-            },
+            name=MLFLOW_MODEL_NAME,
+            tags={**validated_registry_tags, "stage": "challenger"},
         )
         logger.info(
             "Modelo registrado no Registry: %s vers\u00e3o %s",
@@ -236,12 +624,11 @@ def normalize_download_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         except KeyError:
             df.columns = df.columns.get_level_values(0)
 
-    required_columns = ["Close", "High", "Low", "Volume"]
-    missing_columns = [column for column in required_columns if column not in df.columns]
+    missing_columns = [column for column in REQUIRED_RAW_COLUMNS if column not in df.columns]
     if missing_columns:
         raise ValueError(f"Colunas ausentes na resposta da API: {missing_columns}")
 
-    normalized = df[required_columns].copy().dropna()
+    normalized = df[REQUIRED_RAW_COLUMNS].copy().dropna()
     normalized = normalized[~normalized.index.duplicated(keep="last")]
     normalized = normalized.sort_index()
     return normalized
@@ -263,7 +650,7 @@ def load_cached_data() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def save_cached_data(data: pd.DataFrame):
+def save_cached_data(data: pd.DataFrame) -> None:
     try:
         data.to_csv(CACHE_DATA_PATH)
     except Exception as error:
@@ -322,7 +709,7 @@ def download_from_binance() -> pd.DataFrame:
     return df
 
 
-def download_crypto_data():
+def download_crypto_data() -> pd.DataFrame:
     """Baixa dados horários do BTC no Yahoo Finance."""
     logger.info("Baixando dados horarios (%s) para %s (Ultimos %s)...", INTERVAL, TICKER, PERIOD)
 
@@ -387,97 +774,14 @@ def download_crypto_data():
     return data
 
 
-# --- Indicadores Técnicos ---
-
-
-def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """Relative Strength Index (RSI). Retorna valores brutos de 0 a 100.
-    A normalização para [0, 1] é feita durante a construção da matriz de features.
-    """
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50.0)
-
-
-def compute_macd_signal(
-    series: pd.Series,
-    fast: int = 12,
-    slow: int = 26,
-    signal: int = 9,
-) -> pd.Series:
-    """MACD Signal line normalizado pelo preço (adimensional)."""
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    # Normalizar pelo preço para tornar adimensional
-    normalized = (macd_line - signal_line) / series.replace(0, np.nan)
-    return normalized.fillna(0.0)
-
-
-def compute_bollinger_pct_b(series: pd.Series, period: int = 20, num_std: float = 2.0) -> pd.Series:
-    """Posição relativa dentro das Bandas de Bollinger (%B). 0=banda inferior, 1=banda superior."""
-    sma = series.rolling(window=period).mean()
-    std = series.rolling(window=period).std()
-    upper = sma + num_std * std
-    lower = sma - num_std * std
-    band_width = (upper - lower).replace(0, np.nan)
-    pct_b = (series - lower) / band_width
-    return pct_b.fillna(0.5).clip(0.0, 1.0)
-
-
-def compute_sma_ratio(series: pd.Series, short: int = 7, long: int = 21) -> pd.Series:
-    """Razão entre SMA curta e SMA longa (momentum de tendência)."""
-    sma_short = series.rolling(window=short).mean()
-    sma_long = series.rolling(window=long).mean()
-    ratio = (sma_short / sma_long.replace(0, np.nan)) - 1.0
-    return ratio.fillna(0.0)
-
-
-def compute_volume_ratio(volume: pd.Series, period: int = 24) -> pd.Series:
-    """Razão entre volume atual e média móvel de volume (normalizado)."""
-    vol_sma = volume.rolling(window=period).mean()
-    ratio = volume / vol_sma.replace(0, np.nan)
-    return ratio.fillna(1.0).clip(0.0, 10.0)
-
-
 def build_feature_matrix(data: pd.DataFrame) -> pd.DataFrame:
-    """Constrói matriz de features técnicas + log-return."""
-    close = data["Close"]
-    volume = data["Volume"]
-
-    log_price = np.log(close)
-    log_return = log_price.diff()
-
-    rsi = compute_rsi(close, 14) / 100.0  # normalizado [0, 1]
-    macd_sig = compute_macd_signal(close)  # adimensional
-    bb_pct = compute_bollinger_pct_b(close)  # [0, 1]
-    sma_ratio = compute_sma_ratio(close)  # pequeno valor em torno de 0
-    vol_ratio = compute_volume_ratio(volume)  # em torno de 1
-
-    features = pd.DataFrame(
-        {
-            "log_return": log_return,
-            "rsi": rsi,
-            "macd_signal": macd_sig,
-            "bb_pct_b": bb_pct,
-            "sma_ratio": sma_ratio,
-            "vol_ratio": vol_ratio,
-        },
-        index=data.index,
-    )
-
-    # Remover linhas com NaN (janelas iniciais dos indicadores)
-    features = features.dropna()
-    return features
+    """Wrapper de compatibilidade para o módulo compartilhado de features."""
+    return _build_feature_matrix(data)
 
 
-def create_sliding_window_multifeature(dataset: np.ndarray, look_back: int = 60):
+def create_sliding_window_multifeature(
+    dataset: NDArray[np.float64], look_back: int = 60
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Cria janelas deslizantes para entrada multi-feature.
     dataset: shape (N, n_features)
     Retorna X de shape (samples, look_back, n_features), y de shape (samples,)
@@ -490,12 +794,12 @@ def create_sliding_window_multifeature(dataset: np.ndarray, look_back: int = 60)
     return np.array(X), np.array(y)
 
 
-def safe_mape(y_true, y_pred, eps=1e-8):
+def safe_mape(y_true: NDArray[np.float64], y_pred: NDArray[np.float64], eps: float = 1e-8) -> float:
     denominator = np.maximum(np.abs(y_true), eps)
-    return np.mean(np.abs((y_true - y_pred) / denominator)) * 100
+    return float(np.mean(np.abs((y_true - y_pred) / denominator)) * 100)
 
 
-def build_lstm_architecture(input_shape):
+def build_lstm_architecture(input_shape: tuple[int, int]) -> Sequential:
     """Modelo LSTM bidirecional com múltiplas features para melhor acurácia direcional."""
     model = Sequential(
         [
@@ -513,7 +817,11 @@ def build_lstm_architecture(input_shape):
     return model
 
 
-def run_walk_forward_backtest(X_train, y_train, scaler_return):
+def run_walk_forward_backtest(
+    X_train: NDArray[np.float64],
+    y_train: NDArray[np.float64],
+    scaler_return: Any,
+) -> None:
     """Walk-forward backtest com modelo multi-feature."""
     if len(X_train) < (WALK_FORWARD_SPLITS + 1):
         logger.warning("Dados insuficientes para walk-forward. Backtest pulado.")
@@ -571,23 +879,29 @@ def run_walk_forward_backtest(X_train, y_train, scaler_return):
     )
 
 
-def main():
+def main() -> None:
     np.random.seed(RANDOM_SEED)
     tf.random.set_seed(RANDOM_SEED)
 
     ensure_directories()
     configure_mlflow()
 
+    data_lineage = build_training_data_lineage(dataset_path=CACHE_DATA_PATH)
+    fairness_status = get_fairness_artifact_status()
+
     run_tags = {
-        "model_name": TAG_MODEL_NAME,
+        "model_name": MLFLOW_MODEL_NAME,
         "model_version": TAG_MODEL_VERSION,
         "model_type": "time_series",
         "owner": TAG_OWNER,
         "risk_level": TAG_RISK_LEVEL,
-        "training_data_version": TAG_TRAINING_DATA_VERSION,
-        "git_sha": get_git_sha(),
-        "fairness_checked": True,
+        "training_data_version": data_lineage["training_data_version"],
+        "git_sha": data_lineage["git_sha"],
+        "dvc_data_rev": data_lineage["dvc_data_rev"],
+        "dvc_data_hash": data_lineage["dvc_data_hash"],
+        "fairness_checked": fairness_status["fairness_checked"],
     }
+    validated_run_tags = validate_mlflow_metadata_tags(run_tags, context="run")
 
     params = {
         "ticker": TICKER,
@@ -609,15 +923,34 @@ def main():
         "architecture": "bidirectional_lstm_multifeature",
         "optimizer": "Adam",
         "learning_rate": 1e-3,
+        "dvc_data_rev": data_lineage["dvc_data_rev"],
+        "dvc_data_hash": data_lineage["dvc_data_hash"],
+        "training_data_version": data_lineage["training_data_version"],
+        "git_sha": data_lineage["git_sha"],
     }
 
     with mlflow.start_run(run_name=f"{TICKER}_{INTERVAL}_training"):
-        mlflow.set_tags(run_tags)
+        mlflow.set_tags(validated_run_tags)
         mlflow.log_params(params)
+        mlflow.set_tag("fairness_artifact_path", fairness_status["artifact_path"])
+        mlflow.set_tag("fairness_artifact_status", fairness_status["status"])
+
+        if fairness_status["fairness_checked"]:
+            mlflow.log_metric("fairness_artifact_present", 1.0)
+            mlflow.log_artifact(fairness_status["artifact_path"], artifact_path="fairness")
+        else:
+            mlflow.log_metric("fairness_artifact_present", 0.0)
+            mlflow.set_tag("fairness_alert", fairness_status["alert"])
+            if fairness_status.get("error"):
+                mlflow.set_tag("fairness_alert_error", str(fairness_status["error"]))
+            logger.warning(
+                "Fairness artefato ausente/invalido. fairness_checked=False. Detalhes: %s",
+                fairness_status,
+            )
 
         # 1. Download e feature engineering
-        raw_data = download_crypto_data()
-        features_df = build_feature_matrix(raw_data)
+        raw_data = validate_raw_training_data(download_crypto_data())
+        features_df = validate_feature_training_data(build_feature_matrix(raw_data))
         n_features = features_df.shape[1]
         close_series = raw_data["Close"].reindex(features_df.index)
         mlflow.log_param("n_features", int(n_features))
@@ -785,14 +1118,21 @@ def main():
             "beats_baseline": bool(beats_baseline),
         }
 
-        challenger_version = log_training_artifacts(model, scaler_all, scaler_return, metadata)
+        challenger_version = log_training_artifacts(
+            model,
+            scaler_all,
+            scaler_return,
+            metadata,
+            metadata_tags=validated_run_tags,
+        )
         logger.info("Artefatos registrados no MLflow (model/.keras, scalers/.gz e metadata).")
 
-        # 9. Champion-challenger: promover se melhoria >= 0,5 % no MAE
-        if evaluate_champion_challenger(challenger_mae=mae):
-            promote_to_production(challenger_version)
-        else:
-            archive_challenger(challenger_version)
+        # 9. Champion-challenger com gate manual: sem aprovacao explicita, challenger fica candidato.
+        promotion_outcome = handle_champion_challenger_outcome(
+            challenger_version=challenger_version,
+            challenger_mae=mae,
+        )
+        logger.info("Resultado do gate de promocao: %s", promotion_outcome)
 
         logger.info("\n%s", "=" * 40)
         logger.info("RELATORIO DE PERFORMANCE (%s - HORARIO)", TICKER)
@@ -814,7 +1154,9 @@ def main():
         logger.info("%s", "-" * 40)
         logger.info("Modelo superou baseline? %s", "SIM" if beats_baseline else "NAO")
         logger.info("%s", "=" * 40)
-        logger.info("MLflow run finalizada: %s", mlflow.active_run().info.run_id)
+        active_run = mlflow.active_run()
+        run_id = active_run.info.run_id if active_run is not None else "unknown"
+        logger.info("MLflow run finalizada: %s", run_id)
 
 
 if __name__ == "__main__":

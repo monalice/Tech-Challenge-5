@@ -32,3 +32,4 @@ langfuse>=2.0,<3.0
 pytest
 pandera
 httpx==0.27.2
+apscheduler==3.10.4

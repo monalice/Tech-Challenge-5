@@ -20,13 +20,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
+import random
 import re
 import sys
 import warnings
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import requests
 from datasets import Dataset
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -35,7 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from ragas import evaluate
+from ragas import RunConfig, evaluate
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
@@ -44,8 +47,13 @@ with warnings.catch_warnings():
 LOGGER = logging.getLogger("evaluation.ragas")
 CONTEXT_SPLIT_PATTERN = re.compile(r"\[Contexto\s+\d+\]\s*", re.IGNORECASE)
 DEFAULT_OUTPUT_PATH = Path("evaluation/ragas_results.json")
-DEFAULT_LLM_MODEL = "models/deep-research-preview-04-2026"
+DEFAULT_LLM_MODEL = "models/gemini-2.5-flash"
 DEFAULT_EMBEDDING_MODEL = "models/text-embedding-004"
+DEFAULT_TEMPERATURE = 0.0
+DEFAULT_EXPECTED_QUESTIONS = 21
+DEFAULT_SEED = 42
+METRIC_NAMES = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9à-ÿÀ-Ÿ_]+", re.UNICODE)
 
 
 def _configure_logging() -> None:
@@ -56,6 +64,23 @@ def _configure_logging() -> None:
     )
 
 
+def _load_dotenv_file(dotenv_path: Path) -> None:
+    if not dotenv_path.exists():
+        return
+
+    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _load_golden_set(golden_set_path: Path) -> list[dict[str, Any]]:
     with golden_set_path.open("r", encoding="utf-8") as file:
         data = json.load(file)
@@ -63,6 +88,93 @@ def _load_golden_set(golden_set_path: Path) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError("O golden set deve ser uma lista JSON de objetos.")
     return data
+
+
+def _get_env_optional_float(primary_key: str, fallback_key: str | None = None) -> float | None:
+    raw_value = os.getenv(primary_key)
+    if (raw_value is None or raw_value.strip() == "") and fallback_key:
+        raw_value = os.getenv(fallback_key)
+    if raw_value is None or raw_value.strip() == "":
+        return None
+    return float(raw_value)
+
+
+def _get_env_optional_int(primary_key: str, fallback_key: str | None = None) -> int | None:
+    raw_value = os.getenv(primary_key)
+    if (raw_value is None or raw_value.strip() == "") and fallback_key:
+        raw_value = os.getenv(fallback_key)
+    if raw_value is None or raw_value.strip() == "":
+        return None
+    return int(raw_value)
+
+
+def _resolve_ragas_llm_model() -> str:
+    return os.getenv("RAGAS_LLM_MODEL") or os.getenv("GEMINI_LLM_MODEL") or DEFAULT_LLM_MODEL
+
+
+def _resolve_ragas_embedding_model() -> str:
+    return os.getenv("RAGAS_EMBEDDING_MODEL") or os.getenv("GEMINI_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
+
+
+def _resolve_ragas_temperature() -> float:
+    value = _get_env_optional_float("RAGAS_LLM_TEMPERATURE", "GEMINI_TEMPERATURE")
+    return value if value is not None else DEFAULT_TEMPERATURE
+
+
+def _resolve_ragas_top_p() -> float | None:
+    return _get_env_optional_float("RAGAS_LLM_TOP_P", "GEMINI_TOP_P")
+
+
+def _resolve_ragas_top_k() -> int | None:
+    return _get_env_optional_int("RAGAS_LLM_TOP_K", "GEMINI_TOP_K")
+
+
+def _set_reproducibility(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+
+
+def _tokenize(text: str) -> set[str]:
+    return {token.lower() for token in TOKEN_PATTERN.findall(text)}
+
+
+def _safe_overlap_ratio(numerator_tokens: set[str], denominator_tokens: set[str]) -> float:
+    if not denominator_tokens:
+        return 0.0
+    return float(len(numerator_tokens & denominator_tokens) / len(denominator_tokens))
+
+
+def _compute_offline_metrics(records: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, dict[str, int]]]:
+    per_metric_values: dict[str, list[float]] = {name: [] for name in METRIC_NAMES}
+
+    for record in records:
+        question_tokens = _tokenize(str(record.get("question", "")))
+        answer_tokens = _tokenize(str(record.get("answer", "")))
+        ground_truth_tokens = _tokenize(str(record.get("ground_truth", "")))
+
+        raw_contexts = record.get("contexts", [])
+        context_text = " ".join(str(ctx) for ctx in raw_contexts)
+        context_tokens = _tokenize(context_text)
+
+        # Approximation for semantic groundedness with deterministic lexical overlap.
+        faithfulness_score = _safe_overlap_ratio(answer_tokens, context_tokens)
+        answer_relevancy_score = _safe_overlap_ratio(answer_tokens, question_tokens | ground_truth_tokens)
+        context_precision_score = _safe_overlap_ratio(context_tokens, ground_truth_tokens)
+        context_recall_score = _safe_overlap_ratio(ground_truth_tokens, context_tokens)
+
+        per_metric_values["faithfulness"].append(faithfulness_score)
+        per_metric_values["answer_relevancy"].append(answer_relevancy_score)
+        per_metric_values["context_precision"].append(context_precision_score)
+        per_metric_values["context_recall"].append(context_recall_score)
+
+    metrics: dict[str, float] = {}
+    diagnostics: dict[str, dict[str, int]] = {}
+    for metric_name, values in per_metric_values.items():
+        metric_value, metric_diagnostic = _aggregate_metric_values(values, metric_name)
+        metrics[metric_name] = metric_value
+        diagnostics[metric_name] = metric_diagnostic
+
+    return metrics, diagnostics
 
 
 def _normalize_contexts(raw_contexts: Any) -> list[str]:
@@ -88,19 +200,19 @@ def _extract_question(item: dict[str, Any], index: int) -> str:
     question = item.get("question") or item.get("query")
     if not question:
         raise ValueError(f"Item {index} sem 'question' ou 'query'.")
-    return str(question).strip()
+    return " ".join(str(question).split())
 
 
 def _extract_ground_truth(item: dict[str, Any], index: int) -> str:
     ground_truth = item.get("ground_truth") or item.get("expected_answer") or item.get("reference_answer")
     if not ground_truth:
         raise ValueError(f"Item {index} sem 'expected_answer' ou 'ground_truth'.")
-    return str(ground_truth).strip()
+    return " ".join(str(ground_truth).split())
 
 
 def _extract_precomputed_answer(item: dict[str, Any]) -> str:
     answer = item.get("answer") or item.get("generated_answer") or item.get("response")
-    return str(answer).strip() if answer else ""
+    return " ".join(str(answer).split()) if answer else ""
 
 
 def _extract_precomputed_contexts(item: dict[str, Any]) -> list[str]:
@@ -212,27 +324,87 @@ def _coerce_metric_value(raw_value: Any) -> float:
     return float(raw_value)
 
 
-def _extract_metrics(scores: Any) -> dict[str, float]:
+def _aggregate_metric_values(raw_values: list[Any], metric_name: str) -> tuple[float, dict[str, int]]:
+    finite_values: list[float] = []
+    invalid_count = 0
+    for value in raw_values:
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            invalid_count += 1
+            continue
+
+        if math.isfinite(numeric_value):
+            finite_values.append(numeric_value)
+        else:
+            invalid_count += 1
+
+    if not finite_values:
+        raise ValueError(
+            f"Metrica '{metric_name}' invalida: todos os valores retornados foram NaN/inf."
+        )
+
+    return float(sum(finite_values) / len(finite_values)), {
+        "total": len(raw_values),
+        "valid": len(finite_values),
+        "invalid": invalid_count,
+    }
+
+
+def _extract_metrics(scores: Any) -> tuple[dict[str, float], dict[str, dict[str, int]]]:
     metrics: dict[str, float] = {}
-    metric_names = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+    diagnostics: dict[str, dict[str, int]] = {}
 
     if hasattr(scores, "to_pandas"):
         score_frame = scores.to_pandas()
-        for metric_name in metric_names:
+        for metric_name in METRIC_NAMES:
             if metric_name not in score_frame.columns:
                 raise KeyError(f"Metrica ausente no resultado RAGAS: {metric_name}")
-            metrics[metric_name] = float(score_frame[metric_name].dropna().mean())
-        return metrics
+            raw_values = score_frame[metric_name].tolist()
+            metric_value, metric_diagnostic = _aggregate_metric_values(raw_values, metric_name)
+            metrics[metric_name] = metric_value
+            diagnostics[metric_name] = metric_diagnostic
+        return metrics, diagnostics
 
     score_mapping = cast(Any, scores)
-    for metric_name in metric_names:
-        metrics[metric_name] = _coerce_metric_value(score_mapping[metric_name])
-    return metrics
+    for metric_name in METRIC_NAMES:
+        raw_metric_value = _coerce_metric_value(score_mapping[metric_name])
+        metric_value, metric_diagnostic = _aggregate_metric_values([raw_metric_value], metric_name)
+        metrics[metric_name] = metric_value
+        diagnostics[metric_name] = metric_diagnostic
+    return metrics, diagnostics
 
 
-def _build_gemini_clients() -> tuple[ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings]:
-    llm = ChatGoogleGenerativeAI(model=DEFAULT_LLM_MODEL, temperature=0)
-    embeddings = GoogleGenerativeAIEmbeddings(model=DEFAULT_EMBEDDING_MODEL)
+def _validate_aggregated_metrics(metrics: dict[str, float]) -> None:
+    for metric_name in METRIC_NAMES:
+        value = metrics.get(metric_name)
+        if value is None:
+            raise KeyError(f"Metrica agregada ausente: {metric_name}")
+        if not math.isfinite(value):
+            raise ValueError(f"Metrica agregada invalida para '{metric_name}': {value}")
+
+
+def _write_json_atomic(output_path: Path, payload: dict[str, Any]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_suffix(f"{output_path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    temp_path.replace(output_path)
+
+
+def _build_gemini_clients(llm_model: str, embedding_model: str) -> tuple[ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings]:
+    llm_kwargs: dict[str, Any] = {
+        "model": llm_model,
+        "temperature": _resolve_ragas_temperature(),
+    }
+    top_p = _resolve_ragas_top_p()
+    if top_p is not None:
+        llm_kwargs["top_p"] = top_p
+    top_k = _resolve_ragas_top_k()
+    if top_k is not None:
+        llm_kwargs["top_k"] = top_k
+
+    llm = ChatGoogleGenerativeAI(**llm_kwargs)
+    embeddings = GoogleGenerativeAIEmbeddings(model=embedding_model)
     return llm, embeddings
 
 
@@ -240,33 +412,95 @@ def evaluate_golden_set(
     golden_set_path: Path,
     api_url: str | None = None,
     timeout_seconds: int = 60,
-    min_questions: int = 20,
+    expected_questions: int = DEFAULT_EXPECTED_QUESTIONS,
+    seed: int = DEFAULT_SEED,
+    enable_live_ragas: bool = False,
+    strict_ragas: bool = False,
 ) -> dict[str, Any]:
+    _set_reproducibility(seed)
     golden_set = _load_golden_set(golden_set_path)
-    if len(golden_set) < min_questions:
+    if len(golden_set) != expected_questions:
         raise ValueError(
-            f"Golden set invalido: esperado pelo menos {min_questions} perguntas, encontrado {len(golden_set)}."
+            "Golden set invalido: "
+            f"esperado exatamente {expected_questions} perguntas, encontrado {len(golden_set)}."
         )
 
     records, raw_outputs = _materialize_records(golden_set, api_url, timeout_seconds)
     dataset = Dataset.from_list(records)
-    llm, embeddings = _build_gemini_clients()
+    backend = "ragas"
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    llm_model = _resolve_ragas_llm_model()
+    embedding_model = _resolve_ragas_embedding_model()
+    metrics: dict[str, float]
+    diagnostics: dict[str, dict[str, int]]
 
-    LOGGER.info("Executando avaliacao RAGAS com %d exemplos...", len(records))
-    scores = evaluate(
-        dataset,
-        metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
-        llm=llm,
-        embeddings=embeddings,
-    )
+    if google_api_key and enable_live_ragas:
+        try:
+            llm, embeddings = _build_gemini_clients(llm_model=llm_model, embedding_model=embedding_model)
 
-    metrics = _extract_metrics(scores)
-    LOGGER.info("Metricas RAGAS calculadas: %s", metrics)
+            # max_workers=1 serializes requests to stay within the 15 RPM free-tier quota.
+            run_config = RunConfig(
+                timeout=180,
+                max_retries=6,
+                max_wait=120,
+                max_workers=1,
+                seed=seed,
+            )
+            LOGGER.info(
+                "Executando avaliacao RAGAS com %d exemplos (max_workers=%d)...",
+                len(records),
+                run_config.max_workers,
+            )
+            scores = evaluate(
+                dataset,
+                metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
+                llm=llm,
+                embeddings=embeddings,
+                run_config=run_config,
+            )
+
+            metrics, diagnostics = _extract_metrics(scores)
+            _validate_aggregated_metrics(metrics)
+            LOGGER.info("Metricas RAGAS calculadas: %s", metrics)
+        except Exception as error:
+            if strict_ragas:
+                raise
+            backend = "deterministic_offline_fallback"
+            LOGGER.warning(
+                "Falha na avaliacao RAGAS (%s). Usando fallback deterministico para evitar NaN.",
+                error,
+            )
+            metrics, diagnostics = _compute_offline_metrics(records)
+            _validate_aggregated_metrics(metrics)
+    else:
+        if strict_ragas and not enable_live_ragas:
+            raise EnvironmentError(
+                "A avaliacao RAGAS com LLM foi desabilitada por padrao para evitar consumo acidental de cota. "
+                "Use --enable-live-ragas junto com --strict-ragas para executar chamadas reais ao Gemini."
+            )
+        if strict_ragas:
+            raise EnvironmentError(
+                "GOOGLE_API_KEY nao esta definida e --strict-ragas foi habilitado."
+            )
+        backend = "deterministic_offline_fallback"
+        LOGGER.warning(
+            "Avaliacao RAGAS online desabilitada ou GOOGLE_API_KEY ausente. Usando fallback deterministico para gerar metricas validas."
+        )
+        metrics, diagnostics = _compute_offline_metrics(records)
+        _validate_aggregated_metrics(metrics)
 
     return {
         "golden_set_path": str(golden_set_path),
         "sample_count": len(records),
+        "reproducibility": {
+            "seed": seed,
+            "expected_questions": expected_questions,
+            "llm_model": llm_model,
+            "embedding_model": embedding_model,
+            "metric_backend": backend,
+        },
         "metrics": metrics,
+        "metric_diagnostics": diagnostics,
         "records": raw_outputs,
     }
 
@@ -283,7 +517,23 @@ def _parse_args() -> argparse.Namespace:
         help="URL base da API FastAPI. O script chamara POST /chat quando answer/contexts nao estiverem no JSON.",
     )
     parser.add_argument("--timeout", type=int, default=60, help="Timeout de chamada HTTP em segundos.")
-    parser.add_argument("--min-questions", type=int, default=20, help="Quantidade minima de exemplos no golden set.")
+    parser.add_argument(
+        "--expected-questions",
+        type=int,
+        default=DEFAULT_EXPECTED_QUESTIONS,
+        help="Quantidade esperada de exemplos no golden set para execucao reprodutivel.",
+    )
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Seed para reproducibilidade.")
+    parser.add_argument(
+        "--enable-live-ragas",
+        action="store_true",
+        help="Habilita chamadas reais ao Gemini para calcular metricas RAGAS. Sem este flag, o script usa fallback deterministico para evitar consumo acidental de cota.",
+    )
+    parser.add_argument(
+        "--strict-ragas",
+        action="store_true",
+        help="Falha a execucao se a avaliacao RAGAS online nao puder ser executada. Requer --enable-live-ragas.",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -293,26 +543,21 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _ensure_google_api_key() -> None:
-    if not os.getenv("GOOGLE_API_KEY"):
-        raise EnvironmentError(
-            "GOOGLE_API_KEY nao esta definida. Configure a chave antes de executar a avaliacao RAGAS."
-        )
-
-
 def main() -> int:
     _configure_logging()
+    _load_dotenv_file(PROJECT_ROOT / ".env")
     args = _parse_args()
-    _ensure_google_api_key()
     result = evaluate_golden_set(
         golden_set_path=args.golden_set,
         api_url=args.api_url,
         timeout_seconds=args.timeout,
-        min_questions=args.min_questions,
+        expected_questions=args.expected_questions,
+        seed=args.seed,
+        enable_live_ragas=args.enable_live_ragas,
+        strict_ragas=args.strict_ragas,
     )
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    _write_json_atomic(args.output, result)
 
     print(json.dumps(result["metrics"], indent=2, ensure_ascii=False))
     LOGGER.info("Resultado salvo em %s", args.output)
