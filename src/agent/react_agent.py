@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -25,9 +25,9 @@ import pandas as pd
 import requests
 import yfinance as yf
 from langchain.agents import AgentExecutor, create_react_agent
+from langchain_aws import ChatBedrock
 from langchain.prompts import PromptTemplate
 from langchain.tools import tool
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 try:
     from langfuse.callback import CallbackHandler as LangfuseHandler  # type: ignore[import-not-found]
@@ -53,7 +53,10 @@ BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_TIMEOUT_SECONDS = 10
 YFINANCE_TIMEOUT_SECONDS = 10
 YFINANCE_MAX_RETRIES = 2
-DEFAULT_AGENT_LLM_MODEL = os.getenv("AGENT_LLM_MODEL", os.getenv("GEMINI_LLM_MODEL", "gemini-2.5-pro"))
+DEFAULT_AGENT_LLM_MODEL = os.getenv(
+    "AGENT_LLM_MODEL",
+    os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"),
+)
 
 
 def _get_env_optional_float(primary_key: str, fallback_key: str | None = None) -> float | None:
@@ -85,6 +88,14 @@ def _resolve_agent_top_p() -> float | None:
 
 def _resolve_agent_top_k() -> int | None:
     return _get_env_optional_int("AGENT_LLM_TOP_K", "GEMINI_TOP_K")
+
+
+def _resolve_bedrock_region() -> str | None:
+    return (
+        os.getenv("BEDROCK_AWS_REGION")
+        or os.getenv("AWS_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+    )
 
 def _remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
     if len(series) < 2:
@@ -474,7 +485,7 @@ _REACT_PROMPT = PromptTemplate.from_template(_REACT_PROMPT_TEMPLATE)
 def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
     """Constrói e retorna um AgentExecutor ReAct configurado com as 3 ferramentas.
 
-    Requer a variável de ambiente GOOGLE_API_KEY.
+    Requer uma região AWS configurada e credenciais válidas para Amazon Bedrock.
 
     Args:
         ml_artifacts: dicionário compartilhado com 'model', 'scaler', 'scaler_return' e 'metadata'.
@@ -483,26 +494,29 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
         AgentExecutor pronto para receber ``{"input": "<pergunta>"}``
         via ``.invoke()``.
     """
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    if not google_api_key:
-        raise OSError("A variável GOOGLE_API_KEY não está definida.")
+    bedrock_region = _resolve_bedrock_region()
+    if not bedrock_region:
+        raise OSError(
+            "A região AWS para Amazon Bedrock não está definida. Use BEDROCK_AWS_REGION, AWS_REGION ou AWS_DEFAULT_REGION."
+        )
 
-    llm_kwargs: dict[str, Any] = {
-        "model": DEFAULT_AGENT_LLM_MODEL,
-        "temperature": _resolve_agent_temperature(),
-    }
+    model_kwargs: dict[str, Any] = {"temperature": _resolve_agent_temperature()}
     top_p = _resolve_agent_top_p()
     if top_p is not None:
-        llm_kwargs["top_p"] = top_p
+        model_kwargs["top_p"] = top_p
     top_k = _resolve_agent_top_k()
     if top_k is not None:
-        llm_kwargs["top_k"] = top_k
+        model_kwargs["top_k"] = top_k
 
-    llm = ChatGoogleGenerativeAI(**llm_kwargs)
+    llm = ChatBedrock(
+        model_id=DEFAULT_AGENT_LLM_MODEL,
+        region_name=bedrock_region,
+        model_kwargs=model_kwargs,
+    )
 
     tools = _make_tools(ml_artifacts)
 
-    agent = create_react_agent(llm=llm, tools=tools, prompt=_REACT_PROMPT)
+    agent = create_react_agent(llm=cast(Any, llm), tools=tools, prompt=_REACT_PROMPT)
 
     # Langfuse: telemetria de qualidade LLM (faithfulness, relevância, latência).
     # Só é ativado quando LANGFUSE_PUBLIC_KEY e LANGFUSE_SECRET_KEY estão definidas.

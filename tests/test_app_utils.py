@@ -80,35 +80,47 @@ def test_is_production_environment_true_when_app_env_is_production(monkeypatch):
     assert app_module.is_production_environment() is True
 
 
-def test_validate_google_api_key_for_startup_allows_non_production(monkeypatch):
+def test_validate_bedrock_configuration_for_startup_allows_non_production(monkeypatch):
     monkeypatch.delenv("APP_ENV", raising=False)
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.delenv("ENV", raising=False)
     monkeypatch.delenv("STAGE", raising=False)
     monkeypatch.delenv("DEPLOY_ENV", raising=False)
-    monkeypatch.setenv("GOOGLE_API_KEY", "mock_key_para_testes")
+    monkeypatch.setenv("AWS_REGION", "local-test-1")
 
-    app_module.validate_google_api_key_for_startup()
+    app_module.validate_bedrock_configuration_for_startup()
 
 
-def test_validate_google_api_key_for_startup_rejects_placeholder_in_production(monkeypatch):
+def test_validate_bedrock_configuration_for_startup_rejects_placeholder_in_production(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("GOOGLE_API_KEY", "your-google-api-key")
+    monkeypatch.setenv("AWS_REGION", "your-aws-region")
 
     with pytest.raises(RuntimeError, match="inválida para produção"):
-        app_module.validate_google_api_key_for_startup()
+        app_module.validate_bedrock_configuration_for_startup()
 
 
-def test_validate_google_api_key_for_startup_rejects_invalid_format_in_production(monkeypatch):
+def test_validate_bedrock_configuration_for_startup_rejects_invalid_format_in_production(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("GOOGLE_API_KEY", "insecure-token")
+    monkeypatch.setenv("AWS_REGION", "insecure-region")
 
     with pytest.raises(RuntimeError, match="formato inválido"):
-        app_module.validate_google_api_key_for_startup()
+        app_module.validate_bedrock_configuration_for_startup()
 
 
-def test_validate_google_api_key_for_startup_accepts_valid_format_in_production(monkeypatch):
+def test_validate_bedrock_configuration_for_startup_accepts_valid_format_in_production(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy" + "A" * 30)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("BEDROCK_GUARDRAIL_ID", "gr-123")
+    monkeypatch.setenv("BEDROCK_GUARDRAIL_VERSION", "1")
 
-    app_module.validate_google_api_key_for_startup()
+    app_module.validate_bedrock_configuration_for_startup()
+
+
+def test_validate_bedrock_configuration_for_startup_requires_guardrail_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.delenv("BEDROCK_GUARDRAIL_ID", raising=False)
+    monkeypatch.delenv("BEDROCK_GUARDRAIL_VERSION", raising=False)
+
+    with pytest.raises(RuntimeError, match="Guardrails"):
+        app_module.validate_bedrock_configuration_for_startup()

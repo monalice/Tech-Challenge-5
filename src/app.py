@@ -74,14 +74,14 @@ PRODUCTION_ENV_VARIABLES = (
     "STAGE",
     "DEPLOY_ENV",
 )
-GOOGLE_API_KEY_PATTERN = re.compile(r"^AIza[A-Za-z0-9_-]{20,}$")
-INSECURE_GOOGLE_API_KEY_VALUES = {
+BEDROCK_REGION_PATTERN = re.compile(r"^[a-z]{2}(?:-gov)?-[a-z]+-\d$")
+INSECURE_BEDROCK_CONFIG_VALUES = {
     "",
-    "your-google-api-key",
+    "your-aws-region",
+    "your-bedrock-region",
     "changeme",
     "replace-me",
-    "your_api_key_here",
-    "mock_key_para_testes",
+    "your_region_here",
     "test",
     "dummy",
     "none",
@@ -385,20 +385,33 @@ def is_production_environment() -> bool:
     return False
 
 
-def validate_google_api_key_for_startup() -> None:
+def validate_bedrock_configuration_for_startup() -> None:
     if not is_production_environment():
         return
 
-    api_key = (os.getenv("GOOGLE_API_KEY") or "").strip()
-    if api_key.lower() in INSECURE_GOOGLE_API_KEY_VALUES:
+    aws_region = (
+        os.getenv("BEDROCK_AWS_REGION")
+        or os.getenv("AWS_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+        or ""
+    ).strip()
+    if aws_region.lower() in INSECURE_BEDROCK_CONFIG_VALUES:
         raise RuntimeError(
-            "GOOGLE_API_KEY inválida para produção. Configure uma chave real e segura."
+            "Região AWS do Amazon Bedrock inválida para produção. Configure uma região real e segura."
         )
 
-    if not GOOGLE_API_KEY_PATTERN.fullmatch(api_key):
+    if not BEDROCK_REGION_PATTERN.fullmatch(aws_region):
         raise RuntimeError(
-            "GOOGLE_API_KEY com formato inválido para produção. "
-            "Use uma chave válida do provedor antes de iniciar a API."
+            "Região AWS do Amazon Bedrock com formato inválido para produção. "
+            "Use uma região válida antes de iniciar a API."
+        )
+
+    guardrail_identifier = (os.getenv("BEDROCK_GUARDRAIL_ID") or "").strip()
+    guardrail_version = (os.getenv("BEDROCK_GUARDRAIL_VERSION") or "").strip()
+    if not guardrail_identifier or not guardrail_version:
+        raise RuntimeError(
+            "Amazon Bedrock Guardrails deve ser configurado em produção. "
+            "Defina BEDROCK_GUARDRAIL_ID e BEDROCK_GUARDRAIL_VERSION."
         )
 
 
@@ -576,7 +589,7 @@ def perform_health_checks() -> dict[str, Any]:
 # --- Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    validate_google_api_key_for_startup()
+    validate_bedrock_configuration_for_startup()
     logger.info("Carregando modelo LSTM Hourly e scaler...")
     try:
         ml_artifacts["model"] = load_trained_model(MODEL_PATH)
@@ -915,16 +928,17 @@ def predict_next_hour(
     summary="Chat com o Agente LLM (ReAct)",
     description=(
         "Recebe uma mensagem em linguagem natural e a processa com um Agente ReAct "
-        "(LangChain + Gemini). O agente orquestra 3 ferramentas: PrevisaoBitcoinTool "
+        "(LangChain + Amazon Bedrock). O agente orquestra 3 ferramentas: PrevisaoBitcoinTool "
         "(inferência LSTM), CotacaoAtualTool (cotação em tempo real) e CryptoRAGTool "
-        "(contexto de mercado simulado). Requer a variável de ambiente GOOGLE_API_KEY."
+        "(contexto de mercado simulado). Requer acesso AWS com permissões para Amazon Bedrock."
     ),
 )
 def chat(request: ChatRequest) -> dict[str, Any]:
     """Endpoint de chat com o Agente ReAct LangChain."""
-    input_validation = input_guardrail.validate(request.message)
+    input_validation = input_guardrail.apply(request.message)
     if not input_validation.allowed:
         raise HTTPException(status_code=400, detail=input_validation.reason)
+    llm_input = input_validation.sanitized_text or request.message
 
     # Import lazy para evitar importação circular no nível de módulo
     from src.agent.react_agent import build_agent  # noqa: PLC0415
@@ -935,7 +949,7 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     try:
-        result = agent_executor.invoke({"input": request.message})
+        result = agent_executor.invoke({"input": llm_input})
     except Exception as exc:
         logger.error("Erro no agente ReAct: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Erro no agente: {exc}") from exc

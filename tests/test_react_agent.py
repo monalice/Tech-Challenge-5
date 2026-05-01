@@ -116,17 +116,19 @@ def test_tools_execute_with_mocks_and_return_expected_sections(monkeypatch):
     assert "[Contexto 1]" in contexto
 
 
-def test_build_agent_requires_google_api_key(monkeypatch):
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+def test_build_agent_requires_bedrock_region(monkeypatch):
+    monkeypatch.delenv("BEDROCK_AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
-    with pytest.raises(OSError, match="GOOGLE_API_KEY"):
+    with pytest.raises(OSError, match="Bedrock"):
         react_agent.build_agent({})
 
 
 def test_build_agent_constructs_executor_with_three_tools(monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
 
-    monkeypatch.setattr(react_agent, "ChatGoogleGenerativeAI", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(react_agent, "ChatBedrock", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(react_agent, "create_react_agent", lambda llm, tools, prompt: "fake-agent")
     monkeypatch.setattr(
         react_agent,
@@ -148,7 +150,7 @@ def test_build_agent_constructs_executor_with_three_tools(monkeypatch):
 
 
 def test_agent_response_can_combine_forecast_with_rag_context(monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
 
     ml_artifacts = {
         "model": _DummyModel(),
@@ -156,7 +158,7 @@ def test_agent_response_can_combine_forecast_with_rag_context(monkeypatch):
         "metadata": {"n_features": 1, "metrics": {"mape_price": 2.0}},
     }
 
-    monkeypatch.setattr(react_agent, "ChatGoogleGenerativeAI", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(react_agent, "ChatBedrock", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(react_agent, "create_react_agent", lambda llm, tools, prompt: "fake-agent")
     monkeypatch.setattr(
         react_agent,
