@@ -369,6 +369,12 @@ def configure_mlflow() -> None:
 
 CHAMPION_METRIC = "mae_price"  # métrica usada na comparação champion-challenger
 MIN_IMPROVEMENT = 0.005  # melhoria mínima de 0,5 % para promover challenger
+AUTO_PROMOTE_VALIDATED = os.getenv("MLFLOW_AUTO_PROMOTE_VALIDATED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 PROMOTION_APPROVAL_ENV_VAR = "MLFLOW_PROMOTION_APPROVED"
 PROMOTION_ADMIN_COMMAND_ENV_VAR = "MLFLOW_ADMIN_COMMAND"
 CHAMPION_ALIAS = os.getenv("MLFLOW_CHAMPION_ALIAS", "champion")
@@ -531,6 +537,10 @@ def mark_challenger_as_candidate(registered_model_version: str, reason: str) -> 
 def handle_champion_challenger_outcome(challenger_version: str, challenger_mae: float) -> str:
     challenger_beats_champion = evaluate_champion_challenger(challenger_mae=challenger_mae)
     if challenger_beats_champion:
+        if AUTO_PROMOTE_VALIDATED:
+            promote_to_production(challenger_version)
+            return "promoted_auto"
+
         if is_manual_promotion_approved(challenger_version=challenger_version):
             promote_to_production(challenger_version)
             return "promoted"
@@ -1127,7 +1137,7 @@ def main() -> None:
         )
         logger.info("Artefatos registrados no MLflow (model/.keras, scalers/.gz e metadata).")
 
-        # 9. Champion-challenger com gate manual: sem aprovacao explicita, challenger fica candidato.
+        # 9. Champion-challenger com promocao automatica para versão validada.
         promotion_outcome = handle_champion_challenger_outcome(
             challenger_version=challenger_version,
             challenger_mae=mae,

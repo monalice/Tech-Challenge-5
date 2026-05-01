@@ -87,3 +87,15 @@ variable "health_check_path" {
   type        = string
   default     = "/health"
 }
+
+variable "drift_schedule_expression" {
+  description = "EventBridge cron/rate expression for daily drift workflow"
+  type        = string
+  default     = "cron(0 3 * * ? *)"
+}
+
+variable "drift_ticker" {
+  description = "Ticker used in drift checks orchestrated by Step Functions"
+  type        = string
+  default     = "BTC-USD"
+}

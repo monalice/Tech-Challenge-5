@@ -38,6 +38,16 @@ output "alb_dns_name" {
   value       = aws_lb.app.dns_name
 }
 
+output "drift_retrain_state_machine_arn" {
+  description = "ARN of drift-retrain Step Functions state machine"
+  value       = aws_sfn_state_machine.drift_retrain.arn
+}
+
+output "drift_schedule_rule_name" {
+  description = "EventBridge rule that triggers the daily drift workflow"
+  value       = aws_cloudwatch_event_rule.daily_drift_workflow.name
+}
+
 output "google_secret_arn" {
   description = "Secrets Manager ARN for GOOGLE_API_KEY"
   value       = aws_secretsmanager_secret.google_api_key.arn

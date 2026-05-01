@@ -17,3 +17,5 @@ task_memory         = 1024
 desired_count       = 1
 container_image_tag = "latest"
 health_check_path   = "/health"
+drift_schedule_expression = "cron(0 3 * * ? *)"
+drift_ticker              = "BTC-USD"
