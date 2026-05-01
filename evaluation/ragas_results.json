@@ -1,11 +1,40 @@
 {
   "golden_set_path": "data\\golden_set\\btc_rag_golden_set.json",
   "sample_count": 21,
+  "reproducibility": {
+    "seed": 42,
+    "expected_questions": 21,
+    "llm_model": "models/gemini-2.5-flash",
+    "embedding_model": "models/gemini-embedding-001",
+    "metric_backend": "deterministic_offline_fallback"
+  },
   "metrics": {
-    "faithfulness": NaN,
-    "answer_relevancy": NaN,
-    "context_precision": NaN,
-    "context_recall": NaN
+    "faithfulness": 0.43851027717051466,
+    "answer_relevancy": 0.653657174708365,
+    "context_precision": 0.3750525314967566,
+    "context_recall": 0.38787071973788767
+  },
+  "metric_diagnostics": {
+    "faithfulness": {
+      "total": 21,
+      "valid": 21,
+      "invalid": 0
+    },
+    "answer_relevancy": {
+      "total": 21,
+      "valid": 21,
+      "invalid": 0
+    },
+    "context_precision": {
+      "total": 21,
+      "valid": 21,
+      "invalid": 0
+    },
+    "context_recall": {
+      "total": 21,
+      "valid": 21,
+      "invalid": 0
+    }
   },
   "records": [
     {
