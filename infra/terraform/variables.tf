@@ -81,3 +81,9 @@ variable "container_image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "health_check_path" {
+  description = "Health check path for ALB target group"
+  type        = string
+  default     = "/health"
+}

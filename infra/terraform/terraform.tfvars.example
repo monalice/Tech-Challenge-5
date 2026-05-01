@@ -16,3 +16,4 @@ task_cpu            = 512
 task_memory         = 1024
 desired_count       = 1
 container_image_tag = "latest"
+health_check_path   = "/health"

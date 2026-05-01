@@ -13,6 +13,11 @@ output "rds_port" {
   value       = aws_db_instance.mlflow.port
 }
 
+output "pgvector_enable_sql" {
+  description = "Run this SQL once after provisioning to enable pgvector"
+  value       = "CREATE EXTENSION IF NOT EXISTS vector;"
+}
+
 output "ecr_repository_url" {
   description = "ECR repository URL for Docker image push"
   value       = aws_ecr_repository.app.repository_url
@@ -26,6 +31,11 @@ output "ecs_cluster_name" {
 output "ecs_service_name" {
   description = "ECS service name"
   value       = aws_ecs_service.app.name
+}
+
+output "alb_dns_name" {
+  description = "Public DNS name of the Application Load Balancer"
+  value       = aws_lb.app.dns_name
 }
 
 output "google_secret_arn" {
