@@ -42,6 +42,7 @@ def _valid_mlflow_metadata_tags() -> dict[str, object]:
         "model_version": "v1",
         "model_type": "time_series",
         "training_data_version": "models/btc_hourly_cache.csv",
+        "metrics": {"mae_price": 123.45},
         "owner": "ml-team",
         "risk_level": "medium",
         "fairness_checked": True,
@@ -348,6 +349,7 @@ def test_main_sets_mlflow_tags_and_params_before_pipeline(monkeypatch):
     assert tags["owner"] == tm.TAG_OWNER
     assert tags["risk_level"] == tm.TAG_RISK_LEVEL
     assert tags["training_data_version"] == "sha-main-test:abc123dvc"
+    assert tags["metrics"] == {}
     assert tags["git_sha"] == "sha-main-test"
     assert tags["dvc_data_rev"] == "sha-main-test"
     assert tags["dvc_data_hash"] == "abc123dvc"
@@ -608,6 +610,7 @@ def test_mark_challenger_as_candidate_sets_alias_and_tags(monkeypatch):
 
 
 def test_handle_champion_challenger_outcome_requires_explicit_approval(monkeypatch):
+    monkeypatch.setattr(tm, "AUTO_PROMOTE_VALIDATED", False)
     monkeypatch.setattr(tm, "evaluate_champion_challenger", lambda challenger_mae: True)
     monkeypatch.setattr(tm, "is_manual_promotion_approved", lambda challenger_version: False)
 
@@ -629,6 +632,7 @@ def test_handle_champion_challenger_outcome_requires_explicit_approval(monkeypat
 
 
 def test_handle_champion_challenger_outcome_promotes_with_explicit_approval(monkeypatch):
+    monkeypatch.setattr(tm, "AUTO_PROMOTE_VALIDATED", False)
     monkeypatch.setattr(tm, "evaluate_champion_challenger", lambda challenger_mae: True)
     monkeypatch.setattr(tm, "is_manual_promotion_approved", lambda challenger_version: True)
 

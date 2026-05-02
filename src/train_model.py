@@ -71,6 +71,7 @@ MLFLOW_MODEL_NAME = os.getenv("MLFLOW_MODEL_NAME", "btc_hourly_forecaster")
 TAG_MODEL_VERSION = os.getenv("MLFLOW_MODEL_VERSION", "v1")
 TAG_OWNER = os.getenv("MLFLOW_OWNER", "ml-team")
 TAG_RISK_LEVEL = os.getenv("MLFLOW_RISK_LEVEL", "medium")
+ALLOWED_RISK_LEVELS = {"low", "medium", "high", "critical"}
 DVC_LOCK_PATH = "dvc.lock"
 FAIRNESS_ARTIFACT_PATH = os.getenv(
     "MLFLOW_FAIRNESS_ARTIFACT_PATH",
@@ -82,6 +83,7 @@ REQUIRED_MLFLOW_METADATA_SCHEMA: dict[str, type[Any]] = {
     "model_version": str,
     "model_type": str,
     "training_data_version": str,
+    "metrics": dict,
     "owner": str,
     "risk_level": str,
     "fairness_checked": bool,
@@ -202,6 +204,30 @@ def validate_mlflow_metadata_tags(tags: dict[str, Any], context: str) -> dict[st
         raise ValueError(
             f"Schema de metadata MLflow inválido ({context}): campos inválidos: {invalid_fields}"
         )
+
+    risk_level = str(validated["risk_level"]).strip().lower()
+    if risk_level not in ALLOWED_RISK_LEVELS:
+        raise ValueError(
+            "Schema de metadata MLflow inválido "
+            f"({context}): risk_level fora do domínio permitido {sorted(ALLOWED_RISK_LEVELS)}"
+        )
+
+    metrics_payload = validated["metrics"]
+    if not isinstance(metrics_payload, dict):
+        raise ValueError(
+            f"Schema de metadata MLflow inválido ({context}): metrics deve ser dict."
+        )
+
+    for metric_name, metric_value in metrics_payload.items():
+        if not isinstance(metric_name, str) or metric_name.strip() == "":
+            raise ValueError(
+                f"Schema de metadata MLflow inválido ({context}): nome de métrica inválido."
+            )
+        if not isinstance(metric_value, (int, float, bool, str)):
+            raise ValueError(
+                "Schema de metadata MLflow inválido "
+                f"({context}): valor de métrica inválido para '{metric_name}'."
+            )
 
     return validated
 
@@ -903,6 +929,7 @@ def main() -> None:
         "model_name": MLFLOW_MODEL_NAME,
         "model_version": TAG_MODEL_VERSION,
         "model_type": "time_series",
+        "metrics": {},
         "owner": TAG_OWNER,
         "risk_level": TAG_RISK_LEVEL,
         "training_data_version": data_lineage["training_data_version"],
@@ -1103,6 +1130,34 @@ def main() -> None:
             }
         )
 
+        governance_metrics = {
+            "mae_price": float(mae),
+            "rmse_price": float(rmse),
+            "mape_price": float(mape),
+            "mae_price_baseline": float(baseline_mae),
+            "rmse_price_baseline": float(baseline_rmse),
+            "mape_price_baseline": float(baseline_mape),
+            "mae_return": float(model_return_mae),
+            "mae_return_baseline": float(baseline_return_mae),
+            "direction_accuracy_pct": float(direction_accuracy),
+            "beats_baseline": bool(beats_baseline),
+        }
+
+        governance_tags = {
+            **validated_run_tags,
+            "metrics": governance_metrics,
+        }
+        validated_governance_tags = validate_mlflow_metadata_tags(
+            governance_tags,
+            context="run_post_training",
+        )
+        mlflow.set_tags(validated_governance_tags)
+        logger.info(
+            "governance_tags_validated | event=%s payload=%s",
+            "mlflow_governance_schema_enforced",
+            json.dumps(validated_governance_tags, ensure_ascii=True),
+        )
+
         # 8. Registrar artefatos e metadados no MLflow
         metadata = {
             "ticker": TICKER,
@@ -1133,7 +1188,7 @@ def main() -> None:
             scaler_all,
             scaler_return,
             metadata,
-            metadata_tags=validated_run_tags,
+            metadata_tags=validated_governance_tags,
         )
         logger.info("Artefatos registrados no MLflow (model/.keras, scalers/.gz e metadata).")
 
