@@ -14,6 +14,185 @@ import requests
 logger = logging.getLogger("stockcast.drift.automation")
 
 
+# ─── Evidently: relatórios de data drift e prediction drift ──────────────────
+
+
+def run_evidently_drift_report(
+    reference_data: Any,
+    current_data: Any,
+    *,
+    psi_bins: int = 10,
+) -> dict[str, Any]:
+    """Gera relatórios de data drift e prediction drift usando Evidently com PSI.
+
+    Executa dois relatórios independentes:
+
+    - **Data drift**: compara a distribuição do preço real (coluna ``price``)
+      entre o período de referência (treino/validação) e o período atual.
+    - **Prediction drift**: compara a distribuição dos erros de predição
+      (``price_pred − price``) para detectar degradação do modelo.
+
+    Usa ``DataDriftPreset`` com PSI (Population Stability Index) como
+    estatística de teste. Fallback para cálculo manual de PSI por quantis
+    quando Evidently não está disponível.
+
+    Args:
+        reference_data: ``pandas.DataFrame`` de referência com coluna ``price``
+            (janela histórica do período de treino ou validação).
+        current_data: ``pandas.DataFrame`` atual com coluna ``price`` (real) e,
+            opcionalmente, ``price_pred`` (predito pelo modelo em produção).
+        psi_bins: Número de bins para o cálculo manual de PSI (fallback).
+
+    Returns:
+        Dicionário com as chaves:
+
+        - ``psi_data`` (float): PSI máximo para data drift.
+        - ``psi_prediction`` (float): PSI máximo para prediction drift.
+        - ``psi`` (float): ``max(psi_data, psi_prediction)`` — métrica
+          consolidada usada nos thresholds de warning (> 0.1) e retrain (> 0.2).
+        - ``drift_share`` (float): proporção de colunas com drift (Evidently).
+        - ``used_evidently`` (bool): se Evidently foi utilizado com sucesso.
+        - ``rows_compared`` (int): número de linhas em ``current_data``.
+        - ``status`` (str): ``"ok"``.
+    """
+    import numpy as np  # noqa: PLC0415
+    import pandas as pd  # noqa: PLC0415
+
+    def _psi_manual(ref: Any, cur: Any) -> float:
+        ref_s = pd.to_numeric(ref, errors="coerce").dropna()
+        cur_s = pd.to_numeric(cur, errors="coerce").dropna()
+        if ref_s.empty or cur_s.empty:
+            return 0.0
+        quantiles = [i / psi_bins for i in range(psi_bins + 1)]
+        cut_points = ref_s.quantile(quantiles).drop_duplicates().to_numpy()
+        if len(cut_points) < 3:
+            return 0.0
+        cut_points[0] = -np.inf
+        cut_points[-1] = np.inf
+        eps = 1e-6
+        ref_pct = (
+            pd.cut(ref_s, bins=cut_points, include_lowest=True)
+            .value_counts(normalize=True, sort=False)
+            .add(eps)
+        )
+        cur_pct = (
+            pd.cut(cur_s, bins=cut_points, include_lowest=True)
+            .value_counts(normalize=True, sort=False)
+            .reindex(ref_pct.index, fill_value=0.0)
+            .add(eps)
+        )
+        return float(((cur_pct - ref_pct) * np.log(cur_pct / ref_pct)).sum())
+
+    ref_price: Any = (
+        reference_data[["price"]]
+        if "price" in reference_data.columns
+        else pd.DataFrame({"price": pd.Series(dtype=float)})
+    )
+    cur_price: Any = (
+        current_data[["price"]]
+        if "price" in current_data.columns
+        else pd.DataFrame({"price": pd.Series(dtype=float)})
+    )
+
+    if "price_pred" in current_data.columns and "price" in current_data.columns:
+        error_series = (current_data["price_pred"] - current_data["price"]).rename("error")
+        ref_error: Any = pd.DataFrame(
+            {"error": pd.Series([0.0] * max(len(reference_data), 1), dtype=float)}
+        )
+        cur_error: Any = pd.DataFrame({"error": error_series.reset_index(drop=True)})
+    else:
+        ref_error = pd.DataFrame({"error": pd.Series([0.0], dtype=float)})
+        cur_error = pd.DataFrame({"error": pd.Series([0.0], dtype=float)})
+
+    psi_data = 0.0
+    psi_prediction = 0.0
+    drift_share = 0.0
+    used_evidently = False
+
+    try:
+        try:
+            from evidently.report import Report  # noqa: PLC0415
+            from evidently.metric_preset import DataDriftPreset  # noqa: PLC0415
+        except ImportError:
+            from evidently import Report  # type: ignore[no-redef]  # noqa: PLC0415
+            from evidently.presets import DataDriftPreset  # type: ignore[no-redef]  # noqa: PLC0415
+
+        def _make_evidently_report() -> Any:
+            try:
+                from evidently.options import DataDriftOptions  # noqa: PLC0415
+
+                return Report(
+                    metrics=[DataDriftPreset()],
+                    options=[DataDriftOptions(num_stattest="psi", cat_stattest="psi")],
+                )
+            except Exception:
+                try:
+                    return Report(metrics=[DataDriftPreset(stattest="psi")])
+                except Exception:
+                    return Report(metrics=[DataDriftPreset()])
+
+        def _extract_psi_and_share(report_dict: dict[str, Any]) -> tuple[float, float]:
+            max_psi_val = 0.0
+            share_val = 0.0
+            for metric in report_dict.get("metrics", []):
+                result = metric.get("result", {})
+                share_val = float(result.get("share_of_drifted_columns", share_val))
+                for _, col_data in result.get("drift_by_columns", {}).items():
+                    if "psi" in str(col_data.get("stattest_name", "")).lower():
+                        score = col_data.get("drift_score")
+                        if score is not None:
+                            max_psi_val = max(max_psi_val, float(score))
+            return max_psi_val, share_val
+
+        if not ref_price.empty and not cur_price.empty:
+            rpt_data = _make_evidently_report()
+            rpt_data.run(reference_data=ref_price, current_data=cur_price)
+            psi_data, drift_share = _extract_psi_and_share(rpt_data.as_dict())
+
+        if not ref_error.empty and not cur_error.empty:
+            rpt_pred = _make_evidently_report()
+            rpt_pred.run(reference_data=ref_error, current_data=cur_error)
+            psi_prediction, _ = _extract_psi_and_share(rpt_pred.as_dict())
+
+        used_evidently = True
+
+    except Exception as exc:
+        logger.warning("Evidently indisponível, usando cálculo manual de PSI: %s", exc)
+        psi_data = _psi_manual(
+            ref_price["price"] if "price" in ref_price.columns else [],
+            cur_price["price"] if "price" in cur_price.columns else [],
+        )
+        psi_prediction = _psi_manual(ref_error["error"], cur_error["error"])
+
+    consolidated_psi = max(psi_data, psi_prediction)
+    logger.info(
+        json.dumps(
+            {
+                "event": "evidently_drift_report",
+                "psi_data": round(psi_data, 6),
+                "psi_prediction": round(psi_prediction, 6),
+                "psi_consolidated": round(consolidated_psi, 6),
+                "drift_share": round(drift_share, 4),
+                "used_evidently": used_evidently,
+                "rows_compared": len(current_data),
+                "threshold_warning": 0.1,
+                "threshold_retrain": 0.2,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    return {
+        "status": "ok",
+        "psi_data": float(psi_data),
+        "psi_prediction": float(psi_prediction),
+        "psi": float(consolidated_psi),
+        "drift_share": float(drift_share),
+        "used_evidently": used_evidently,
+        "rows_compared": len(current_data),
+    }
+
+
 @dataclass(frozen=True)
 class DriftAutomationConfig:
     psi_warning_threshold: float = 0.1
@@ -162,6 +341,10 @@ def _log_drift_to_mlflow_with_policy(
             _configure_mlflow_serving_context(config, mlflow_module=mlflow_module)
             with mlflow_module.start_run(run_name="drift_automation", nested=True):
                 mlflow_module.log_metric("psi_btc_usd", psi)
+                mlflow_module.log_metric("psi_data_drift", float(drift_result.get("psi_data", psi)))
+                mlflow_module.log_metric("psi_prediction_drift", float(drift_result.get("psi_prediction", psi)))
+                mlflow_module.log_metric("drift_share", float(drift_result.get("drift_share", 0.0)))
+                mlflow_module.set_tag("used_evidently", str(drift_result.get("used_evidently", False)).lower())
                 mlflow_module.set_tag("drift_action", action)
                 mlflow_module.set_tag("alert_sent", str(alert_sent).lower())
                 mlflow_module.set_tag(
@@ -266,13 +449,98 @@ def _trigger_retraining(
         }
 
 
+# --- Amazon CloudWatch Metrics ------------------------------------------------
+
+
+def _publish_drift_metrics_to_cloudwatch(
+    *,
+    psi_data: float,
+    psi_prediction: float,
+    action: str,
+    ticker: str,
+    cloudwatch_namespace: str = "MLOps/DriftDetection",
+    aws_region: str | None = None,
+) -> bool:
+    """Publica metricas de drift no Amazon CloudWatch Metrics via boto3.
+
+    Metricas publicadas no namespace ``MLOps/DriftDetection``:
+
+    - ``PSI_DataDrift``: PSI para distribuicao dos dados de entrada (preco real).
+    - ``PSI_PredictionDrift``: PSI para distribuicao dos erros de predicao.
+    - ``DriftActionCode``: 0 = monitor_only, 1 = send_alert, 2 = trigger_retrain.
+
+    Todas as metricas usam a dimensao ``Ticker`` (ex.: ``BTC-USD``).
+
+    Args:
+        psi_data: PSI calculado para data drift.
+        psi_prediction: PSI calculado para prediction drift.
+        action: Acao determinada pela politica de drift.
+        ticker: Simbolo do ativo usado como dimensao CloudWatch.
+        cloudwatch_namespace: Namespace do CloudWatch Metrics.
+        aws_region: Regiao AWS. Se ``None``, usa ``AWS_DEFAULT_REGION``.
+
+    Returns:
+        ``True`` se a publicacao foi bem-sucedida, ``False`` caso contrario.
+    """
+    _action_codes: dict[str, float] = {
+        "monitor_only": 0.0,
+        "send_alert": 1.0,
+        "trigger_retrain": 2.0,
+    }
+    try:
+        import boto3  # noqa: PLC0415
+
+        cw_kwargs: dict[str, Any] = {}
+        region = aws_region or os.getenv("AWS_DEFAULT_REGION")
+        if region:
+            cw_kwargs["region_name"] = region
+
+        cw = boto3.client("cloudwatch", **cw_kwargs)
+        cw.put_metric_data(
+            Namespace=cloudwatch_namespace,
+            MetricData=[
+                {
+                    "MetricName": "PSI_DataDrift",
+                    "Dimensions": [{"Name": "Ticker", "Value": ticker}],
+                    "Value": psi_data,
+                    "Unit": "None",
+                },
+                {
+                    "MetricName": "PSI_PredictionDrift",
+                    "Dimensions": [{"Name": "Ticker", "Value": ticker}],
+                    "Value": psi_prediction,
+                    "Unit": "None",
+                },
+                {
+                    "MetricName": "DriftActionCode",
+                    "Dimensions": [{"Name": "Ticker", "Value": ticker}],
+                    "Value": _action_codes.get(action, -1.0),
+                    "Unit": "None",
+                },
+            ],
+        )
+        logger.info(
+            "CloudWatch DriftMetrics publicadas: namespace=%s ticker=%s "
+            "psi_data=%.4f psi_prediction=%.4f action=%s",
+            cloudwatch_namespace,
+            ticker,
+            psi_data,
+            psi_prediction,
+            action,
+        )
+        return True
+    except Exception as exc:
+        logger.error("Falha ao publicar metricas de drift no CloudWatch: %s", exc)
+        return False
+
+
 def process_drift_result(
     drift_result: dict[str, Any],
     config: DriftAutomationConfig,
     *,
     mlflow_module: Any,
 ) -> dict[str, Any]:
-    """Aplica política operacional de drift: monitoramento, alerta e trigger de retraining."""
+    """Aplica politica operacional de drift: monitoramento, alerta e trigger de retraining."""
     if drift_result.get("status") != "ok" or "psi" not in drift_result:
         return {
             "action": "none",
@@ -328,6 +596,13 @@ def process_drift_result(
         drift_result=drift_result,
     )
 
+    cloudwatch_published = _publish_drift_metrics_to_cloudwatch(
+        psi_data=float(drift_result.get("psi_data", psi)),
+        psi_prediction=float(drift_result.get("psi_prediction", psi)),
+        action=action,
+        ticker=str(drift_result.get("ticker", drift_result.get("data_source", "BTC-USD"))),
+    )
+
     return {
         "action": action,
         "psi": psi,
@@ -338,5 +613,6 @@ def process_drift_result(
         "alert_status": alert_status,
         "mlflow_policy": "retry_with_backoff_then_persist_operational_error",
         "mlflow_error": mlflow_error,
+        "cloudwatch_published": cloudwatch_published,
         "retrain": retrain_result,
     }
