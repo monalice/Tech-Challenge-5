@@ -11,13 +11,11 @@ import mlflow
 import numpy as np
 import pandas as pd
 import psutil
-import requests
 
-# IMPORTANTE (Windows): tensorflow e yfinance devem ser importados antes de pandas
-# para evitar conflito de DLL que causa crash (exit code -1073741819)
+# IMPORTANTE (Windows): tensorflow deve ser importado cedo para evitar conflito
+# de DLL que causa crash (exit code -1073741819)
 import tensorflow as tf
 import uvicorn
-import yfinance as yf
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from prometheus_client import (
@@ -57,15 +55,11 @@ from src.agent.llm_config import (
     validate_bedrock_configuration_for_startup,
 )
 from src.domain.constants import (
-    BINANCE_API_URL,
-    BINANCE_SYMBOL,
-    BINANCE_TIMEOUT_SECONDS,
-    BRASILIA_TZ,
     LOOKBACK,
     SUPPORTED_TICKER,
-    YFINANCE_TIMEOUT_SECONDS,
     Z_SCORE_95_CONFIDENCE,
 )
+from src.infrastructure.market_data import BinanceSource, FallbackMarketData, YFinanceSource
 from src.domain.time_utils import (
     remove_incomplete_hour_candle,
     timestamp_to_brt_iso,
@@ -243,6 +237,13 @@ MODEL_META_PATH = "models/model_metadata_btc.json"
 CACHE_TTL_SECONDS = 30
 YFINANCE_MAX_RETRIES = 3
 PREDICTIONS_HISTORY_MAX = 100
+
+# Instância compartilhada da estratégia de mercado (primária + fallback)
+_APP_MARKET_DATA: FallbackMarketData = FallbackMarketData(
+    primary=YFinanceSource(),
+    fallback=BinanceSource(),
+    max_retries=YFINANCE_MAX_RETRIES,
+)
 market_cache: dict[str, dict[str, Any]] = {}
 
 # Histórico circular de predições (MLOps)
@@ -394,74 +395,6 @@ def load_trained_model(model_path: str) -> Any:
 
 
 # --- Fontes de dados ---
-def _download_from_yfinance(ticker: str) -> pd.DataFrame:
-    """Baixa dados horários do Yahoo Finance para o ticker informado.
-
-    Args:
-        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
-
-    Returns:
-        DataFrame com colunas de preços (incluindo ``Close``) indexado por DatetimeIndex.
-
-    Raises:
-        ValueError: Se a resposta do Yahoo Finance estiver vazia.
-    """
-    df = yf.download(
-        ticker, period="1mo", interval="1h", progress=False, timeout=YFINANCE_TIMEOUT_SECONDS
-    )
-    if df is None or df.empty:
-        raise ValueError("Resposta vazia do Yahoo Finance")
-
-    if isinstance(df.columns, pd.MultiIndex):
-        try:
-            df = df.xs(ticker, axis=1, level=1)
-        except KeyError:
-            df.columns = df.columns.get_level_values(0)
-
-    if isinstance(df, pd.Series):
-        df = df.to_frame(name="Close")
-
-    return df
-
-
-def _download_from_binance(limit: int = 200) -> pd.DataFrame:
-    """Baixa candles horários do BTCUSDT via Binance REST API pública (sem autenticação).
-
-    Args:
-        limit: Número de candles a retornar (máximo 1000 pela API da Binance).
-
-    Returns:
-        DataFrame com índice DatetimeIndex UTC e colunas ``Close``, ``High``, ``Low``, ``Volume``.
-
-    Raises:
-        ValueError: Se a resposta da Binance estiver vazia.
-        requests.HTTPError: Se a requisição HTTP falhar.
-    """
-    resp = requests.get(
-        BINANCE_API_URL,
-        params={"symbol": BINANCE_SYMBOL, "interval": "1h", "limit": limit},
-        timeout=BINANCE_TIMEOUT_SECONDS,
-    )
-    resp.raise_for_status()
-    raw = resp.json()
-    if not raw:
-        raise ValueError("Resposta vazia da Binance")
-
-    # Cada item: [open_time, open, high, low, close, volume, ...]
-    timestamps = pd.to_datetime([row[0] for row in raw], unit="ms", utc=True)
-    df = pd.DataFrame(
-        {
-            "Close": [float(row[4]) for row in raw],
-            "High": [float(row[2]) for row in raw],
-            "Low": [float(row[3]) for row in raw],
-            "Volume": [float(row[5]) for row in raw],
-        },
-        index=timestamps,
-    )
-    df.index.name = "Datetime"
-    return df
-
-
 def download_with_retry(ticker: str) -> tuple[pd.DataFrame, str]:
     """Baixa dados de mercado com retry no Yahoo Finance e fallback para Binance.
 
@@ -482,46 +415,23 @@ def download_with_retry(ticker: str) -> tuple[pd.DataFrame, str]:
     if cached is not None:
         return cached, get_cached_source(ticker)
 
-    # Tentativa primária: Yahoo Finance
-    last_error = None
-    for attempt in range(1, YFINANCE_MAX_RETRIES + 1):
-        try:
-            df = _download_from_yfinance(ticker)
-            set_cached_market_data(ticker, df, "yfinance")
-            METRIC_DATA_SOURCE.labels(source="yfinance").inc()
-            logger.info("Dados de mercado obtidos via Yahoo Finance (tentativa %d)", attempt)
-            return df, "yfinance"
-        except Exception as error:
-            last_error = error
-            logger.warning(
-                "Yahoo Finance falhou (tentativa %d/%d): %s", attempt, YFINANCE_MAX_RETRIES, error
-            )
-            METRIC_DATA_ERRORS.labels(source="yfinance").inc()
-            if attempt < YFINANCE_MAX_RETRIES:
-                time.sleep(0.5 * attempt)
-
-    # Fallback: Binance
-    logger.warning(
-        "Yahoo Finance indisponível após %d tentativas. Tentando Binance...",
-        YFINANCE_MAX_RETRIES,
-    )
     try:
-        df_binance = _download_from_binance()
-        set_cached_market_data(ticker, df_binance, "binance")
-        METRIC_DATA_SOURCE.labels(source="binance").inc()
-        logger.info("Dados de mercado obtidos via Binance (fallback)")
-        return df_binance, "binance"
-    except Exception as binance_error:
-        logger.error("Binance fallback também falhou: %s", binance_error)
+        df, source = _APP_MARKET_DATA.download(ticker)
+    except RuntimeError as exc:
+        logger.error("Todas as fontes de dados falharam: %s", exc)
+        METRIC_DATA_ERRORS.labels(source="yfinance").inc()
         METRIC_DATA_ERRORS.labels(source="binance").inc()
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Falha ao consultar dados de mercado em todas as fontes disponíveis "
+                "(Yahoo Finance e Binance)"
+            ),
+        ) from exc
 
-    raise HTTPException(
-        status_code=503,
-        detail=(
-            "Falha ao consultar dados de mercado em todas as fontes disponíveis "
-            "(Yahoo Finance e Binance)"
-        ),
-    ) from last_error
+    set_cached_market_data(ticker, df, source)
+    METRIC_DATA_SOURCE.labels(source=source).inc()
+    return df, source
 
 
 # --- Health checks ---

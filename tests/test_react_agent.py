@@ -69,8 +69,15 @@ def _find_tool(tools: list, name: str):
 
 
 def test_download_market_data_uses_binance_fallback(monkeypatch):
-    monkeypatch.setattr(react_agent, "_fetch_yfinance", lambda ticker: (_ for _ in ()).throw(ValueError("yf down")))
-    monkeypatch.setattr(react_agent, "_fetch_binance", lambda limit=200: _mock_market_df())
+    import src.infrastructure.market_data as market_data
+
+    def _yf_raises(self: object, ticker: str) -> object:
+        raise ValueError("yf down")
+
+    monkeypatch.setattr(market_data.YFinanceSource, "fetch", _yf_raises)
+    monkeypatch.setattr(
+        market_data.BinanceSource, "fetch", lambda self, ticker: _mock_market_df()
+    )
 
     df, source = react_agent._download_market_data("BTC-USD")
 

@@ -21,8 +21,6 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-import requests
-import yfinance as yf
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_aws import ChatBedrock
 from langchain.prompts import PromptTemplate
@@ -39,15 +37,11 @@ except ImportError:
 from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
 from src.agent.llm_config import resolve_aws_region
 from src.features.technical_features import build_feature_matrix
+from src.infrastructure.market_data import BinanceSource, FallbackMarketData, YFinanceSource
 from src.security.guardrails import InputGuardrail, OutputGuardrail
 from src.domain.constants import (
-    BINANCE_API_URL,
-    BINANCE_SYMBOL,
-    BINANCE_TIMEOUT_SECONDS,
-    BRASILIA_TZ,
     LOOKBACK,
     SUPPORTED_TICKER,
-    YFINANCE_TIMEOUT_SECONDS,
     Z_SCORE_95_CONFIDENCE,
 )
 from src.domain.time_utils import (
@@ -59,6 +53,13 @@ from src.domain.time_utils import (
 
 logger = logging.getLogger("stockcast.agent")
 YFINANCE_MAX_RETRIES = 2
+
+# Instância compartilhada da estratégia de mercado para o agente
+_FALLBACK_MARKET_DATA: FallbackMarketData = FallbackMarketData(
+    primary=YFinanceSource(),
+    fallback=BinanceSource(),
+    max_retries=YFINANCE_MAX_RETRIES,
+)
 DEFAULT_AGENT_LLM_MODEL = os.getenv(
     "AGENT_LLM_MODEL",
     os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
@@ -133,98 +134,25 @@ def _resolve_agent_top_k() -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# Download de dados de mercado (yfinance → Binance fallback)
+# Download de dados de mercado (delega para infrastructure.market_data)
 # ---------------------------------------------------------------------------
 
 
-def _fetch_yfinance(ticker: str) -> pd.DataFrame:
-    """Baixa dados horários do Yahoo Finance para o último mês.
+def _download_market_data(ticker: str) -> tuple[pd.DataFrame, str]:
+    """Baixa dados de mercado via FallbackMarketData (YFinance → Binance).
+
+    Mantido como função de módulo para facilitar monkeypatch em testes.
 
     Args:
         ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
 
     Returns:
-        DataFrame com colunas de preços (incluindo ``Close``) indexado por DatetimeIndex.
+        Tupla ``(DataFrame, source_name)``.
 
     Raises:
-        ValueError: Se a resposta do Yahoo Finance estiver vazia.
+        RuntimeError: Se todas as fontes falharem.
     """
-    df = yf.download(
-        ticker, period="1mo", interval="1h", progress=False, timeout=YFINANCE_TIMEOUT_SECONDS
-    )
-    if df is None or df.empty:
-        raise ValueError("Resposta vazia do Yahoo Finance")
-    if isinstance(df.columns, pd.MultiIndex):
-        try:
-            df = df.xs(ticker, axis=1, level=1)
-        except KeyError:
-            df.columns = df.columns.get_level_values(0)
-
-    if isinstance(df, pd.Series):
-        df = df.to_frame(name="Close")
-
-    return df
-
-
-def _fetch_binance(limit: int = 200) -> pd.DataFrame:
-    """Baixa candles horários do BTCUSDT via Binance REST API pública.
-
-    Args:
-        limit: Número de candles a retornar.
-
-    Returns:
-        DataFrame com índice DatetimeIndex UTC e colunas ``Close``, ``High``,
-        ``Low``, ``Volume``.
-
-    Raises:
-        ValueError: Se a resposta da Binance estiver vazia.
-        requests.HTTPError: Se a requisição HTTP falhar.
-    """
-    resp = requests.get(
-        BINANCE_API_URL,
-        params={"symbol": BINANCE_SYMBOL, "interval": "1h", "limit": limit},
-        timeout=BINANCE_TIMEOUT_SECONDS,
-    )
-    resp.raise_for_status()
-    raw = resp.json()
-    if not raw:
-        raise ValueError("Resposta vazia da Binance")
-    timestamps = pd.to_datetime([row[0] for row in raw], unit="ms", utc=True)
-    df = pd.DataFrame(
-        {
-            "Close": [float(row[4]) for row in raw],
-            "High": [float(row[2]) for row in raw],
-            "Low": [float(row[3]) for row in raw],
-            "Volume": [float(row[5]) for row in raw],
-        },
-        index=timestamps,
-    )
-    df.index.name = "Datetime"
-    return df
-
-
-def _download_market_data(ticker: str) -> tuple[pd.DataFrame, str]:
-    """Tenta Yahoo Finance; em caso de falha, usa Binance."""
-    last_err: Exception | None = None
-    for attempt in range(1, YFINANCE_MAX_RETRIES + 1):
-        try:
-            df = _fetch_yfinance(ticker)
-            return df, "yfinance"
-        except Exception as exc:
-            last_err = exc
-            logger.warning(
-                "[agent] yfinance tentativa %d/%d falhou: %s", attempt, YFINANCE_MAX_RETRIES, exc
-            )
-            if attempt < YFINANCE_MAX_RETRIES:
-                time.sleep(0.5 * attempt)
-
-    logger.warning("[agent] Fallback para Binance...")
-    try:
-        return _fetch_binance(), "binance"
-    except Exception as exc:
-        raise RuntimeError(
-            f"Todas as fontes de dados falharam. Último erro yfinance: {last_err}. Binance: {exc}"
-        ) from exc
+    return _FALLBACK_MARKET_DATA.download(ticker)
 
 
 # ---------------------------------------------------------------------------
