@@ -1,11 +1,19 @@
 from dataclasses import dataclass
 import os
+import re
 from typing import Any
 
 try:
     import boto3  # type: ignore[import-not-found]
 except ImportError:
     boto3 = None  # type: ignore[assignment]
+
+try:
+    from presidio_analyzer import AnalyzerEngine  # type: ignore[import-not-found]
+    from presidio_anonymizer import AnonymizerEngine  # type: ignore[import-not-found]
+except ImportError:
+    AnalyzerEngine = None  # type: ignore[assignment]
+    AnonymizerEngine = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -168,6 +176,16 @@ class InputGuardrail(_BedrockGuardrailBase):
     """Valida entrada do usuário contra prompt injection e context stuffing."""
 
     MAX_INPUT_CHARS = 4096
+    PROMPT_INJECTION_PATTERNS = (
+        r"ignore\s+(all\s+)?previous\s+instructions",
+        r"ignore\s+(todas\s+as\s+)?instru[cç][oõ]es\s+anteriores",
+        r"disregard\s+(all\s+)?(rules|instructions)",
+        r"bypass\s+(the\s+)?(guardrails|safety|security)",
+        r"reveal\s+(system|hidden)\s+prompt",
+        r"act\s+as\s+(developer|system)",
+        r"sudo\s+override",
+        r"forget\s+(everything|all\s+previous\s+instructions)",
+    )
 
     def __init__(
         self,
@@ -185,6 +203,13 @@ class InputGuardrail(_BedrockGuardrailBase):
             client=client,
         )
         self.max_input_chars = max_input_chars
+
+    def _matches_prompt_injection(self, text: str) -> bool:
+        lowered_text = text.lower()
+        for pattern in self.PROMPT_INJECTION_PATTERNS:
+            if re.search(pattern, lowered_text, flags=re.IGNORECASE):
+                return True
+        return False
 
     def apply(self, text: str) -> InputValidationResult:
         """Valida o texto de entrada contra o Amazon Bedrock Guardrails.
@@ -210,6 +235,20 @@ class InputGuardrail(_BedrockGuardrailBase):
             return InputValidationResult(
                 allowed=False,
                 reason=f"Input acima de {self.max_input_chars} caracteres (context stuffing).",
+            )
+
+        if self._matches_prompt_injection(text):
+            return InputValidationResult(
+                allowed=False,
+                reason="Entrada bloqueada por padrão de prompt injection.",
+            )
+
+        # Se Bedrock Guardrails não estiver configurado no ambiente, aplica
+        # apenas validações locais (prompt injection + tamanho) sem bloquear uso.
+        if not self.guardrail_identifier or not self.guardrail_version:
+            return InputValidationResult(
+                allowed=True,
+                sanitized_text=text,
             )
 
         try:
@@ -264,6 +303,47 @@ class OutputGuardrail(_BedrockGuardrailBase):
             client=client,
         )
 
+    @staticmethod
+    def _anonymize_pii_with_regex(text: str) -> str:
+        """Aplica anonimização local para PII comum quando Bedrock/Presidio falham."""
+        redacted = text
+        # CPF: 000.000.000-00 ou 11 dígitos contínuos
+        redacted = re.sub(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b", "[CPF_REDACTED]", redacted)
+        redacted = re.sub(r"\b\d{11}\b", "[CPF_REDACTED]", redacted)
+        # E-mail
+        redacted = re.sub(
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+            "[EMAIL_REDACTED]",
+            redacted,
+        )
+        # Telefone BR/intl simplificado
+        redacted = re.sub(
+            r"(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)?\d{4,5}[\s.-]?\d{4}",
+            "[PHONE_REDACTED]",
+            redacted,
+        )
+        return redacted
+
+    @staticmethod
+    def _anonymize_pii_with_presidio(text: str) -> str:
+        """Tenta anonimização via Presidio; usa fallback regex se indisponível."""
+        if AnalyzerEngine is None or AnonymizerEngine is None:
+            return OutputGuardrail._anonymize_pii_with_regex(text)
+
+        try:
+            analyzer = AnalyzerEngine()
+            anonymizer = AnonymizerEngine()
+            entities = ["EMAIL_ADDRESS", "PHONE_NUMBER", "BR_CPF", "CPF"]
+            results = analyzer.analyze(text=text, language="pt", entities=entities)
+            if not results:
+                results = analyzer.analyze(text=text, language="en", entities=entities)
+            if not results:
+                return OutputGuardrail._anonymize_pii_with_regex(text)
+            anonymized = anonymizer.anonymize(text=text, analyzer_results=results)
+            return str(anonymized.text)
+        except Exception:
+            return OutputGuardrail._anonymize_pii_with_regex(text)
+
     def sanitize(self, text: str) -> str:
         """Aplica guardrails na saída do LLM, redatando PII e conteúdo bloqueado.
 
@@ -284,15 +364,23 @@ class OutputGuardrail(_BedrockGuardrailBase):
                 qualifiers=["guard_content"],
             )
         except Exception as exc:
-            return f"Saída retida por falha ao aplicar Amazon Bedrock Guardrails: {exc}"
+            # Mantém mensagem explícita de falha para observabilidade e testes,
+            # anexando saída com PII anonimizada via fallback local.
+            sanitized_fallback = self._anonymize_pii_with_presidio(text)
+            return (
+                "Saída retida por falha ao aplicar Amazon Bedrock Guardrails: "
+                f"{exc}. Conteúdo fallback anonimizado: {sanitized_fallback}"
+            )
 
         if self._has_blocked_intervention(response):
             sanitized_text = self._extract_output_text(response, "")
             if sanitized_text:
-                return sanitized_text
-            return self._build_reason(
+                return self._anonymize_pii_with_presidio(sanitized_text)
+            return self._anonymize_pii_with_presidio(
+                self._build_reason(
                 response,
                 "Conteúdo retido pelo Amazon Bedrock Guardrails.",
+                )
             )
 
-        return self._extract_output_text(response, text)
+        return self._anonymize_pii_with_presidio(self._extract_output_text(response, text))

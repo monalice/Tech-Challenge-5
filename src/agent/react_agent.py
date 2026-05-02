@@ -39,6 +39,7 @@ except ImportError:
 
 from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
 from src.features.technical_features import build_feature_matrix
+from src.security.guardrails import InputGuardrail, OutputGuardrail
 
 logger = logging.getLogger("stockcast.agent")
 
@@ -479,6 +480,66 @@ def _remove_incomplete_hour_candle_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+class _GuardedAgentExecutor:
+    """Wrapper para aplicar guardrails de entrada/saída no AgentExecutor."""
+
+    def __init__(
+        self,
+        base_executor: AgentExecutor,
+        input_guardrail: InputGuardrail,
+        output_guardrail: OutputGuardrail,
+    ) -> None:
+        self._base_executor = base_executor
+        self._input_guardrail = input_guardrail
+        self._output_guardrail = output_guardrail
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base_executor, name)
+
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> dict[str, Any]:
+        if not isinstance(input, dict):
+            raise ValueError("Entrada do agente deve ser um dicionário com a chave 'input'.")
+
+        user_prompt = str(input.get("input", ""))
+        validation = self._input_guardrail.validate(user_prompt)
+        if not validation.allowed:
+            return {
+                "output": (
+                    "Entrada bloqueada pela esteira de segurança: "
+                    f"{validation.reason or 'prompt injection/context stuffing detectado'}"
+                ),
+                "intermediate_steps": [],
+                "guardrails": {
+                    "input_allowed": False,
+                    "input_reason": validation.reason,
+                    "output_sanitized": False,
+                },
+            }
+
+        guarded_input = dict(input)
+        guarded_input["input"] = validation.sanitized_text or user_prompt
+        if config is None:
+            result = self._base_executor.invoke(guarded_input, **kwargs)
+        else:
+            result = self._base_executor.invoke(guarded_input, config=config, **kwargs)
+
+        if isinstance(result, dict) and isinstance(result.get("output"), str):
+            result["output"] = self._output_guardrail.sanitize(result["output"])
+            guardrails_meta = result.get("guardrails")
+            if not isinstance(guardrails_meta, dict):
+                guardrails_meta = {}
+            guardrails_meta.update(
+                {
+                    "input_allowed": True,
+                    "input_reason": None,
+                    "output_sanitized": True,
+                }
+            )
+            result["guardrails"] = guardrails_meta
+
+        return result
+
+
 # ---------------------------------------------------------------------------
 # Prompt ReAct
 # ---------------------------------------------------------------------------
@@ -549,6 +610,10 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
     )
 
     tools = _make_tools(ml_artifacts)
+    if len(tools) < 3:
+        raise ValueError(
+            "A arquitetura de referência exige no mínimo 3 tools customizadas para o agente ReAct."
+        )
 
     agent = create_react_agent(llm=cast(Any, llm), tools=tools, prompt=_REACT_PROMPT)
 
@@ -572,7 +637,7 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
         except Exception as exc:
             logger.warning("[agent] Falha ao inicializar Langfuse: %s", exc)
 
-    return AgentExecutor(
+    base_executor = AgentExecutor(
         agent=agent,
         tools=tools,
         callbacks=callbacks if callbacks else None,
@@ -580,4 +645,15 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
         handle_parsing_errors=True,
         max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "6")),
         return_intermediate_steps=True,
+    )
+
+    input_guardrail = InputGuardrail(max_input_chars=InputGuardrail.MAX_INPUT_CHARS)
+    output_guardrail = OutputGuardrail()
+    return cast(
+        AgentExecutor,
+        _GuardedAgentExecutor(
+            base_executor=base_executor,
+            input_guardrail=input_guardrail,
+            output_guardrail=output_guardrail,
+        ),
     )
