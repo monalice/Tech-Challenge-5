@@ -140,3 +140,114 @@ resource "aws_ecs_service" "app" {
 
   tags = local.common_tags
 }
+
+# ---------------------------------------------------------------------------
+# Dedicated CloudWatch log group for training runs
+# Kept separate from inference logs to avoid SPOF and to simplify retention
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_log_group" "training" {
+  name              = "/ecs/${local.name_prefix}/training"
+  retention_in_days = var.training_log_retention_days
+
+  tags = merge(local.common_tags, {
+    Name      = "${local.name_prefix}-training-logs"
+    Component = "training"
+  })
+}
+
+# ---------------------------------------------------------------------------
+# Dedicated ECS Task Definition for champion-challenger training pipeline
+#
+# Intentionally decoupled from aws_ecs_task_definition.app (inference):
+#   - No port mappings    → batch job, never shares ALB/target group
+#   - Higher CPU/memory   → LSTM training is compute-intensive
+#   - Separate log group  → training noise doesn't flood inference logs
+#   - Never attached to aws_ecs_service.app → eliminates SPOF on the
+#     inference service if training fails or is slow
+# ---------------------------------------------------------------------------
+
+resource "aws_ecs_task_definition" "training" {
+  family                   = "${local.name_prefix}-training-task"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = tostring(var.training_task_cpu)
+  memory                   = tostring(var.training_task_memory)
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "training"
+      image     = "${aws_ecr_repository.app.repository_url}:${var.container_image_tag}"
+      essential = true
+
+      # No portMappings: training is a batch workload, never receives traffic
+
+      environment = [
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
+        },
+        {
+          name  = "MLFLOW_TRACKING_URI"
+          value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.mlflow.address}:5432/${var.db_name}"
+        },
+        {
+          name  = "MLFLOW_ARTIFACT_URI"
+          value = "s3://${aws_s3_bucket.artifacts.id}/mlflow-artifacts"
+        },
+        {
+          name  = "MLFLOW_MODEL_NAME"
+          value = var.mlflow_model_name
+        },
+        {
+          name  = "MLFLOW_CHAMPION_ALIAS"
+          value = var.mlflow_champion_alias
+        },
+        {
+          name  = "MLFLOW_CANDIDATE_ALIAS"
+          value = var.mlflow_candidate_alias
+        },
+        {
+          name  = "CHAMPION_MIN_IMPROVEMENT"
+          value = var.champion_min_improvement
+        },
+        # Disable auto-promotion: Step Functions controls the promotion gate
+        {
+          name  = "MLFLOW_AUTO_PROMOTE_VALIDATED"
+          value = "false"
+        },
+        {
+          name  = "TF_CPP_MIN_LOG_LEVEL"
+          value = "2"
+        },
+        {
+          name  = "TF_ENABLE_ONEDNN_OPTS"
+          value = "0"
+        }
+      ]
+
+      secrets = [
+        {
+          name      = "DB_PASSWORD"
+          valueFrom = aws_secretsmanager_secret.db_password.arn
+        }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.training.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "training"
+        }
+      }
+    }
+  ])
+
+  tags = merge(local.common_tags, {
+    Name      = "${local.name_prefix}-training-task"
+    Component = "training"
+  })
+}

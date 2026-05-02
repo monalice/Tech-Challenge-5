@@ -111,3 +111,49 @@ variable "llm_alarm_email" {
   type        = string
   default     = "mlops-alerts@example.com"
 }
+
+# ---------------------------------------------------------------------------
+# Training pipeline (champion-challenger) — isolated compute
+# ---------------------------------------------------------------------------
+
+variable "training_task_cpu" {
+  description = "Fargate CPU units for the dedicated training task (2 vCPU = 2048)"
+  type        = number
+  default     = 2048
+}
+
+variable "training_task_memory" {
+  description = "Memory (MiB) for the dedicated training task"
+  type        = number
+  default     = 4096
+}
+
+variable "training_log_retention_days" {
+  description = "CloudWatch log retention in days for training runs"
+  type        = number
+  default     = 30
+}
+
+variable "champion_min_improvement" {
+  description = "Minimum relative MAE improvement (0.005 = 0.5%) for challenger promotion"
+  type        = string
+  default     = "0.005"
+}
+
+variable "mlflow_model_name" {
+  description = "Registered model name in MLflow Model Registry"
+  type        = string
+  default     = "btc_hourly_forecaster"
+}
+
+variable "mlflow_champion_alias" {
+  description = "MLflow alias that identifies the production champion model"
+  type        = string
+  default     = "champion"
+}
+
+variable "mlflow_candidate_alias" {
+  description = "MLflow alias assigned to challengers that passed evaluation but await promotion"
+  type        = string
+  default     = "candidate"
+}

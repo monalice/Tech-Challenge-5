@@ -111,7 +111,8 @@ data "aws_iam_policy_document" "sfn_drift_retrain" {
       "ecs:RunTask"
     ]
     resources = [
-      aws_ecs_task_definition.app.arn
+      aws_ecs_task_definition.app.arn,
+      aws_ecs_task_definition.training.arn
     ]
   }
 
