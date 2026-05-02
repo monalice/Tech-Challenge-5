@@ -4,6 +4,7 @@ import pandera as pa
 from pandera import Check
 
 from src import app
+from src.features.technical_features import build_feature_matrix
 
 
 def _raw_schema() -> pa.DataFrameSchema:
@@ -69,3 +70,41 @@ def test_validate_indicator_dataframe_schema(synthetic_yfinance_df: pd.DataFrame
         "sma_ratio",
         "vol_ratio",
     ]
+
+
+def test_build_feature_matrix_pandera_no_nulls(synthetic_yfinance_df: pd.DataFrame) -> None:
+    """build_feature_matrix deve retornar DataFrame sem nulls validado pelo schema pandera.
+
+    Garante que os seis indicadores técnicos estejam presentes, dentro dos intervalos
+    esperados e completamente livres de NaN após a transformação.
+    """
+    features = build_feature_matrix(synthetic_yfinance_df)
+    validated = _features_schema().validate(features)
+
+    assert not validated.empty, "O DataFrame de features não deve ser vazio"
+    assert not validated.isna().any().any(), "Não devem existir NaN após build_feature_matrix"
+    assert list(validated.columns) == [
+        "log_return",
+        "rsi",
+        "macd_signal",
+        "bb_pct_b",
+        "sma_ratio",
+        "vol_ratio",
+    ]
+
+
+def test_build_feature_matrix_preserves_record_count(synthetic_yfinance_df: pd.DataFrame) -> None:
+    """build_feature_matrix deve preservar ao máximo os registros de entrada.
+
+    Apenas os períodos de aquecimento dos indicadores (máx. ~27 linhas pela
+    janela MACD lenta de 26 + 1 diff de log_return) são descartados via
+    dropna. O restante deve ser mantido integralmente.
+    """
+    n_input = len(synthetic_yfinance_df)
+    features = build_feature_matrix(synthetic_yfinance_df)
+
+    # MACD slow=26 + 1 diff => no máximo 27 linhas de warm-up descartadas
+    max_warmup_rows = 30
+    assert len(features) >= n_input - max_warmup_rows, (
+        f"Esperado >= {n_input - max_warmup_rows} linhas, obtido {len(features)}"
+    )

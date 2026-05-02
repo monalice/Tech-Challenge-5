@@ -10,6 +10,18 @@ logger = logging.getLogger("stockcast.drift")
 
 
 def _extract_prediction_dataframe(prediction_log: Any) -> pd.DataFrame:
+    """Extrai um DataFrame de preços previstos a partir do histórico de predições.
+
+    Args:
+        prediction_log: Objeto iterável (ex.: ``collections.deque``) contendo
+            dicionários com as chaves ``forecast_for_utc`` e
+            ``predicted_price_usd``.
+
+    Returns:
+        DataFrame com colunas ``timestamp`` (datetime UTC) e ``price`` (float),
+        ordenado por timestamp e sem linhas com NaN nessas colunas.
+        Retorna DataFrame vazio se o log não contiver entradas válidas.
+    """
     rows: list[dict[str, Any]] = []
 
     for item in list(prediction_log):
@@ -37,6 +49,16 @@ def _extract_prediction_dataframe(prediction_log: Any) -> pd.DataFrame:
 
 
 def _extract_real_dataframe(market_df: pd.DataFrame) -> pd.DataFrame:
+    """Extrai um DataFrame de preços reais a partir dos dados de mercado.
+
+    Args:
+        market_df: DataFrame OHLCV com coluna ``Close`` e índice de timestamps.
+
+    Returns:
+        DataFrame com colunas ``timestamp`` (datetime UTC) e ``price`` (float),
+        ordenado por timestamp e sem linhas com NaN nessas colunas.
+        Retorna DataFrame vazio se ``market_df`` for None, vazio ou sem coluna ``Close``.
+    """
     if market_df is None or market_df.empty or "Close" not in market_df.columns:
         return pd.DataFrame(columns=["timestamp", "price"])
 
@@ -110,6 +132,15 @@ def _calculate_psi_fallback(
 
 
 def _extract_psi(report_dict: dict[str, Any]) -> float:
+    """Extrai o valor máximo de PSI do dicionário de resultado do Evidently.
+
+    Args:
+        report_dict: Dicionário retornado por ``Report.as_dict()`` do Evidently.
+
+    Returns:
+        Valor máximo de PSI encontrado nas métricas. Retorna 0.0 se nenhum
+        indicador PSI for encontrado ou se ``drift_score`` for None.
+    """
     max_psi = 0.0
 
     for metric in report_dict.get("metrics", []):

@@ -35,6 +35,14 @@ class _BedrockGuardrailBase:
         self._client = client
 
     def _ensure_client(self) -> Any:
+        """Instancia ou retorna o cliente boto3 bedrock-runtime, criando-o se necessário.
+
+        Returns:
+            Cliente boto3 ``bedrock-runtime`` pronto para uso.
+
+        Raises:
+            RuntimeError: Se a região AWS ou boto3 não estiverem disponíveis.
+        """
         if self._client is None:
             if not self.region_name:
                 raise RuntimeError(
@@ -179,6 +187,19 @@ class InputGuardrail(_BedrockGuardrailBase):
         self.max_input_chars = max_input_chars
 
     def apply(self, text: str) -> InputValidationResult:
+        """Valida o texto de entrada contra o Amazon Bedrock Guardrails.
+
+        Rejeita entradas vazias, acima do limite de caracteres, com prompt
+        injection ou com intervenções bloqueadas pela política configurada.
+
+        Args:
+            text: Texto de entrada fornecido pelo usuário.
+
+        Returns:
+            :class:`InputValidationResult` com ``allowed=True`` e o texto
+            saneado quando a entrada é permitida, ou ``allowed=False`` com o
+            motivo do bloqueio.
+        """
         if not isinstance(text, str) or not text.strip():
             return InputValidationResult(
                 allowed=False,
@@ -214,6 +235,14 @@ class InputGuardrail(_BedrockGuardrailBase):
         )
 
     def validate(self, text: str) -> InputValidationResult:
+        """Alias de :meth:`apply` para compatibilidade com interfaces legadas.
+
+        Args:
+            text: Texto de entrada a ser validado.
+
+        Returns:
+            Resultado de :meth:`apply`.
+        """
         return self.apply(text)
 
 
@@ -236,6 +265,15 @@ class OutputGuardrail(_BedrockGuardrailBase):
         )
 
     def sanitize(self, text: str) -> str:
+        """Aplica guardrails na saída do LLM, redatando PII e conteúdo bloqueado.
+
+        Args:
+            text: Texto de saída gerado pelo LLM.
+
+        Returns:
+            Texto saneado pelo Amazon Bedrock Guardrails, ou mensagem de
+            retenção se o conteúdo for bloqueado ou ocorrer falha na API.
+        """
         if not text:
             return text
 

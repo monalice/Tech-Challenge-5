@@ -60,6 +60,17 @@ DEFAULT_AGENT_LLM_MODEL = os.getenv(
 
 
 def _get_env_optional_float(primary_key: str, fallback_key: str | None = None) -> float | None:
+    """Lê uma variável de ambiente como float, com chave de fallback opcional.
+
+    Args:
+        primary_key: Nome da variável de ambiente principal.
+        fallback_key: Nome da variável de ambiente de fallback, usada quando
+            a principal está ausente ou vazia.
+
+    Returns:
+        Valor convertido para float, ou ``None`` se ambas as variáveis estiverem
+        ausentes ou com valor em branco.
+    """
     raw_value = os.getenv(primary_key)
     if (raw_value is None or raw_value.strip() == "") and fallback_key:
         raw_value = os.getenv(fallback_key)
@@ -69,6 +80,16 @@ def _get_env_optional_float(primary_key: str, fallback_key: str | None = None) -
 
 
 def _get_env_optional_int(primary_key: str, fallback_key: str | None = None) -> int | None:
+    """Lê uma variável de ambiente como int, com chave de fallback opcional.
+
+    Args:
+        primary_key: Nome da variável de ambiente principal.
+        fallback_key: Nome da variável de ambiente de fallback.
+
+    Returns:
+        Valor convertido para int, ou ``None`` se ambas as variáveis estiverem
+        ausentes ou com valor em branco.
+    """
     raw_value = os.getenv(primary_key)
     if (raw_value is None or raw_value.strip() == "") and fallback_key:
         raw_value = os.getenv(fallback_key)
@@ -98,6 +119,19 @@ def _resolve_bedrock_region() -> str | None:
     )
 
 def _remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
+    """Remove o candle horário parcial (em formação) de uma série temporal.
+
+    Compara o último timestamp da série com a hora atual UTC truncada. Se o
+    último candle corresponder à hora corrente (ainda não fechada), ele é
+    descartado para evitar ruído na previsão.
+
+    Args:
+        series: Série temporal indexada por timestamps (aware ou naive).
+
+    Returns:
+        Série sem o último elemento se ele corresponder à hora em formação;
+        caso contrário, a série original sem modificação.
+    """
     if len(series) < 2:
         return series
     last_ts = pd.Timestamp(series.index[-1])

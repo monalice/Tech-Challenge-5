@@ -99,6 +99,13 @@ class DriftAutomationConfig:
 
 
 def _persist_operational_error(error_log_path: str, error_payload: dict[str, Any]) -> None:
+    """Persiste um payload de erro operacional em arquivo JSONL de forma apêndice.
+
+    Args:
+        error_log_path: Caminho absoluto ou relativo para o arquivo ``.jsonl``.
+            O diretório pai é criado automaticamente se não existir.
+        error_payload: Dicionário serializável em JSON com os detalhes do erro.
+    """
     directory = os.path.dirname(error_log_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
@@ -199,6 +206,17 @@ def _send_alert(
     webhook_url: str,
     payload: dict[str, Any],
 ) -> tuple[bool, str]:
+    """Envia alerta de drift para um webhook HTTP.
+
+    Args:
+        webhook_url: URL do endpoint que recebe o payload JSON via POST.
+        payload: Dicionário com dados do alerta a serializar como JSON.
+
+    Returns:
+        Tupla ``(sucesso, status)`` onde ``sucesso`` é ``True`` se o webhook
+        respondeu com HTTP < 400, e ``status`` descreve o resultado ou o
+        código de erro.
+    """
     try:
         response = requests.post(webhook_url, json=payload, timeout=10)
         if response.status_code >= 400:
@@ -212,6 +230,16 @@ def _trigger_retraining(
     command: str,
     timeout_seconds: int,
 ) -> dict[str, Any]:
+    """Dispara o pipeline de retreinamento como subprocesso bloqueante.
+
+    Args:
+        command: Comando shell a ser executado (ex.: ``"python -u src/train_model.py"``).
+        timeout_seconds: Tempo máximo em segundos para aguardar a conclusão.
+
+    Returns:
+        Dicionário com as chaves ``triggered``, ``success``, ``exit_code``,
+        ``stdout_tail`` (últimos 800 chars) e ``stderr_tail`` (idem).
+    """
     args = shlex.split(command)
     try:
         completed = subprocess.run(
