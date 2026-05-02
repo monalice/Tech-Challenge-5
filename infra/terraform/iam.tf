@@ -114,6 +114,12 @@ data "aws_iam_policy_document" "sfn_drift_retrain" {
       aws_ecs_task_definition.app.arn,
       aws_ecs_task_definition.training.arn
     ]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "ecs:cluster"
+      values   = [aws_ecs_cluster.main.arn]
+    }
   }
 
   statement {

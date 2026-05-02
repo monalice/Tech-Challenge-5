@@ -1,38 +1,22 @@
 # ---------------------------------------------------------------------------
-# Champion-Challenger Retraining Pipeline — AWS Step Functions
+# Champion-Challenger Orchestration — AWS Step Functions (ASL)
 #
-# Fluxo completo (MLOps Nível 2, Gap 07):
+# Fluxo de retreino desacoplado (MLOps Nível 2, sem SPOF):
 #
-#   ┌─────────────────────────────────────────────────────────────────────┐
-#   │  EventBridge (cron diário)                                         │
-#   │        │                                                            │
-#   │        ▼                                                            │
-#   │  RunDriftDetection   ──(exit 0)──► NoRetrainingNeeded (Succeed)    │
-#   │        │ (exit≠0)                                                   │
-#   │        ▼                                                            │
-#   │  EvaluateDriftOutcome                                               │
-#   │        │ (Cause contém exitCode 20)                                 │
-#   │        ▼                    ▼ (outro erro)                          │
-#   │  TrainChallenger      DriftSystemError (Succeed)                   │
-#   │  [training task def]                                                │
-#   │        │ (sucesso)          │ (falha infra)                         │
-#   │        ▼                   ▼                                        │
-#   │  EvaluateChampionChallenger  TrainingFailed (Fail)                 │
-#   │  [training task def]                                                │
-#   │  scripts/evaluate_champion_challenger.py                            │
-#   │        │ (exit 0 → promovido)   │ (exit≠0 → abaixo threshold/erro) │
-#   │        ▼                        ▼                                   │
-#   │  ChallengerPromoted (Succeed)   ChallengerNotPromoted (Succeed)    │
-#   └─────────────────────────────────────────────────────────────────────┘
+#   EventBridge → TrainChallenger(ECS)
+#                  └─stdout JSON: {run_id, model_version}
+#                     ↓
+#                 EvaluateChampionChallenger(ECS)
+#                    (recebe CHALLENGER_RUN_ID)
+#                     ↓
+#                 Choice por exit code
+#                     ├─ exit 0  -> EvaluationPassed (Success)
+#                     ├─ exit 10 -> ModelRejected (Fail)
+#                     └─ exit 1  -> EvaluationFailed (Fail)
 #
-# Garantias de isolamento (sem SPOF):
-#   - RunDriftDetection usa aws_ecs_task_definition.app com override de
-#     comando — tarefa efêmera, não altera o serviço de inferência.
-#   - TrainChallenger e EvaluateChampionChallenger usam
-#     aws_ecs_task_definition.training — task def dedicada com CPU/memória
-#     maiores, sem port mappings, nunca associada ao ECS Service de inferência.
-#   - Falhas no pipeline de treinamento resultam em estados terminais
-#     Succeed ou Fail que não afetam o serviço em execução.
+# Observação de integração:
+#   - O estado de treinamento espera payload JSON no output da task com
+#     `run_id` e `model_version` para repassar ao próximo estado.
 # ---------------------------------------------------------------------------
 
 locals {
@@ -50,87 +34,11 @@ resource "aws_sfn_state_machine" "drift_retrain" {
   role_arn = aws_iam_role.sfn_drift_retrain.arn
 
   definition = jsonencode({
-    Comment = "Daily drift detection → champion-challenger retraining pipeline (MLOps Level 2)"
-    StartAt = "RunDriftDetection"
+    Comment = "Champion-Challenger retraining workflow with strict evaluation gate"
+    StartAt = "TrainChallenger"
 
     States = {
 
-      # ──────────────────────────────────────────────────────────────────
-      # Estado 1: Drift Detection
-      # Usa a task de inferência com override de comando para não criar
-      # compute dedicado para uma verificação leve.
-      # Exit code 20 → retrain necessário; exit 0 → sem drift significativo.
-      # ──────────────────────────────────────────────────────────────────
-      RunDriftDetection = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::ecs:runTask.sync"
-        Parameters = {
-          LaunchType     = "FARGATE"
-          Cluster        = aws_ecs_cluster.main.arn
-          TaskDefinition = aws_ecs_task_definition.app.arn
-          NetworkConfiguration = local.sfn_network_config
-          Overrides = {
-            ContainerOverrides = [
-              {
-                Name    = "app"
-                Command = ["python", "-u", "scripts/run_drift_scheduler.py"]
-                Environment = [
-                  {
-                    Name  = "DRIFT_AUTOMATION_API_URL"
-                    Value = "http://${aws_lb.app.dns_name}"
-                  },
-                  {
-                    Name  = "DRIFT_RETRAIN_ENABLED"
-                    Value = "false"
-                  },
-                  {
-                    Name  = "DRIFT_AUTOMATION_TICKER"
-                    Value = var.drift_ticker
-                  }
-                ]
-              }
-            ]
-          }
-        }
-        ResultPath = "$.drift"
-        # Exit code 0 → sem retrain necessário
-        Next = "NoRetrainingNeeded"
-        # Exit code 20 (ou outro ≠ 0) → ECS falha o task; Catch encaminha
-        Catch = [
-          {
-            ErrorEquals = ["States.TaskFailed"]
-            ResultPath  = "$.drift_error"
-            Next        = "EvaluateDriftOutcome"
-          }
-        ]
-      }
-
-      # ──────────────────────────────────────────────────────────────────
-      # Estado 2: Interpretação do exit code do drift
-      # O campo $.drift_error.Cause é uma string JSON que contém o exitCode
-      # do container. Exit code 20 = retrain solicitado pelo scheduler.
-      # ──────────────────────────────────────────────────────────────────
-      EvaluateDriftOutcome = {
-        Type = "Choice"
-        Choices = [
-          {
-            # Padrão de saída: "...\"exitCode\":20..."
-            Variable      = "$.drift_error.Cause"
-            StringMatches = "*\"exitCode\":20*"
-            Next          = "TrainChallenger"
-          }
-        ]
-        # Qualquer outro código de erro (infra, timeout) não deve bloquear inferência
-        Default = "DriftSystemError"
-      }
-
-      # ──────────────────────────────────────────────────────────────────
-      # Estado 3: Treinamento do Challenger
-      # Usa aws_ecs_task_definition.training (compute ISOLADO da inferência):
-      #   - CPU 2048 / RAM 4096 MiB → suficiente para LSTM 100 épocas
-      #   - AUTO_PROMOTE_VALIDATED=false → Step Functions controla a promoção
-      #   - O script registra o modelo com alias 'candidate' no MLflow
-      # ──────────────────────────────────────────────────────────────────
       TrainChallenger = {
         Type     = "Task"
         Resource = "arn:aws:states:::ecs:runTask.sync"
@@ -146,8 +54,6 @@ resource "aws_sfn_state_machine" "drift_retrain" {
                 Command = ["python", "-u", "src/train_model.py"]
                 Environment = [
                   {
-                    # Garante que o script NÃO promova automaticamente;
-                    # a promoção é responsabilidade do próximo estado
                     Name  = "MLFLOW_AUTO_PROMOTE_VALIDATED"
                     Value = "false"
                   }
@@ -155,6 +61,11 @@ resource "aws_sfn_state_machine" "drift_retrain" {
               }
             ]
           }
+        }
+        ResultSelector = {
+          "train_task_output.$" = "$"
+          "run_id.$"            = "$.Output.run_id"
+          "model_version.$"     = "$.Output.model_version"
         }
         ResultPath = "$.training"
         Next       = "EvaluateChampionChallenger"
@@ -167,14 +78,6 @@ resource "aws_sfn_state_machine" "drift_retrain" {
         ]
       }
 
-      # ──────────────────────────────────────────────────────────────────
-      # Estado 4: Avaliação Champion-Challenger e Promoção Condicional
-      # Usa aws_ecs_task_definition.training (batch, sem tráfego de inferência).
-      # Script: scripts/evaluate_champion_challenger.py
-      #   Exit  0 → challenger promovido (melhoria ≥ CHAMPION_MIN_IMPROVEMENT)
-      #   Exit 10 → challenger abaixo do threshold; champion mantido
-      #   Exit  1 → erro de infraestrutura/API
-      # ──────────────────────────────────────────────────────────────────
       EvaluateChampionChallenger = {
         Type     = "Task"
         Resource = "arn:aws:states:::ecs:runTask.sync"
@@ -189,6 +92,10 @@ resource "aws_sfn_state_machine" "drift_retrain" {
                 Name    = "training"
                 Command = ["python", "-u", "scripts/evaluate_champion_challenger.py"]
                 Environment = [
+                  {
+                    Name     = "CHALLENGER_RUN_ID"
+                    "Value.$" = "$.training.run_id"
+                  },
                   {
                     Name  = "CHAMPION_MIN_IMPROVEMENT"
                     Value = var.champion_min_improvement
@@ -211,30 +118,42 @@ resource "aws_sfn_state_machine" "drift_retrain" {
           }
         }
         ResultPath = "$.evaluation"
-        # Exit 0 → task ECS bem-sucedida → promovido
-        Next = "ChallengerPromoted"
-        # Exit ≠ 0 → ECS falha → Catch para estado de não-promoção
+        Next       = "EvaluationPassed"
         Catch = [
           {
             ErrorEquals = ["States.TaskFailed"]
             ResultPath  = "$.evaluation_error"
-            Next        = "ChallengerNotPromoted"
+            Next        = "EvaluationDecision"
           }
         ]
       }
 
-      # ──────────────────────────────────────────────────────────────────
-      # Estados terminais
-      # ──────────────────────────────────────────────────────────────────
-
-      ChallengerPromoted = {
-        Type    = "Succeed"
-        Comment = "Challenger promovido para alias champion no MLflow Model Registry."
+      EvaluationDecision = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable      = "$.evaluation_error.Cause"
+            StringMatches = "*\"exitCode\":10*"
+            Next          = "ModelRejected"
+          },
+          {
+            Variable      = "$.evaluation_error.Cause"
+            StringMatches = "*\"exitCode\":1*"
+            Next          = "EvaluationFailed"
+          }
+        ]
+        Default = "EvaluationFailed"
       }
 
-      ChallengerNotPromoted = {
+      EvaluationPassed = {
         Type    = "Succeed"
-        Comment = "Champion mantido. Challenger registrado como candidate (melhoria abaixo do threshold ou erro de API)."
+        Comment = "Modelo aprovado no quality gate e promovido pela etapa de avaliação."
+      }
+
+      ModelRejected = {
+        Type  = "Fail"
+        Error = "ModelRejected"
+        Cause = "Challenger rejeitado no quality gate (delta_auc abaixo do limiar)."
       }
 
       TrainingFailed = {
@@ -243,14 +162,10 @@ resource "aws_sfn_state_machine" "drift_retrain" {
         Cause   = "O treinamento do challenger falhou. Verifique os logs do ECS em /ecs/${local.name_prefix}/training."
       }
 
-      DriftSystemError = {
-        Type    = "Succeed"
-        Comment = "Erro de infraestrutura na detecção de drift (não relacionado a threshold). Inferência não afetada."
-      }
-
-      NoRetrainingNeeded = {
-        Type    = "Succeed"
-        Comment = "PSI abaixo do threshold de retrain. Champion em produção permanece válido."
+      EvaluationFailed = {
+        Type  = "Fail"
+        Error = "EvaluationSystemError"
+        Cause = "Falha de infraestrutura/API durante avaliação champion-challenger."
       }
     }
   })
