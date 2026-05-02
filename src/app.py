@@ -61,7 +61,7 @@ from src.domain.inference import (
     InsufficientDataError,
     estimate_uncertainty as _estimate_uncertainty_domain,
 )
-from src.domain.ports import LoadedArtifacts
+from src.domain.ports import LLMPort, LoadedArtifacts
 from src.infrastructure.market_data import BinanceSource, FallbackMarketData, YFinanceSource
 from src.domain.time_utils import (
     remove_incomplete_hour_candle,
@@ -534,14 +534,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         app.state.artifacts = artifacts
         app.state.service = InferenceService(artifacts, _DownloadWithRetryPort())
+        try:
+            # Import lazy para evitar custo de inicialização do stack LangChain fora do uso.
+            from src.agent.react_agent import create_agent_llm  # noqa: PLC0415
+
+            app.state.agent_llm = create_agent_llm()
+        except OSError as exc:
+            app.state.agent_llm = None
+            logger.warning("LLM do agente indisponível durante startup: %s", exc)
         logger.info("Artefatos carregados com sucesso.")
     except Exception as e:
         app.state.artifacts = None
         app.state.service = None
+        app.state.agent_llm = None
         raise RuntimeError(f"Falha crítica ao carregar artefatos do modelo: {e}") from e
     yield
     app.state.artifacts = None
     app.state.service = None
+    app.state.agent_llm = None
     logger.info("Artefatos descarregados. API encerrada.")
 
 
@@ -844,7 +854,12 @@ def chat(http_request: Request, request: ChatRequest) -> dict[str, Any]:
 
         try:
             _artifacts: LoadedArtifacts | None = getattr(http_request.app.state, "artifacts", None)
-            agent_executor = build_agent(_artifacts.to_dict() if _artifacts else {})
+            _service: InferenceService | None = getattr(http_request.app.state, "service", None)
+            _agent_llm: LLMPort | None = getattr(http_request.app.state, "agent_llm", None)
+            if _artifacts is None or _service is None or _agent_llm is None:
+                is_error = True
+                raise HTTPException(status_code=503, detail="Artefatos ou LLM do agente não disponíveis.")
+            agent_executor = build_agent(_artifacts, _service, _agent_llm)
         except OSError as exc:
             is_error = True
             raise HTTPException(status_code=503, detail=str(exc)) from exc

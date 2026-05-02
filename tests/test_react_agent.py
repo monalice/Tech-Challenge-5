@@ -8,6 +8,8 @@ import pandas as pd
 import pytest
 
 from src.agent import react_agent
+from src.domain.inference import ConfidenceInterval, InferenceResult, InferenceService
+from src.domain.ports import LoadedArtifacts
 
 
 class _DummyModel:
@@ -34,6 +36,19 @@ class _DummyDoc:
             "published_at": published_at,
         }
         self.page_content = content
+
+
+class _DummyLLM:
+    pass
+
+
+class _StaticMarketDataPort:
+    def __init__(self, df: pd.DataFrame, source: str = "mock") -> None:
+        self._df = df
+        self._source = source
+
+    def download(self, ticker: str) -> tuple[pd.DataFrame, str]:  # noqa: ARG002
+        return self._df.copy(), self._source
 
 
 class _BlockingInputGuardrail:
@@ -68,6 +83,26 @@ def _find_tool(tools: list, name: str):
     return next(tool for tool in tools if tool.name == name)
 
 
+def _loaded_artifacts(metadata: dict[str, Any] | None = None) -> LoadedArtifacts:
+    return LoadedArtifacts(
+        model=_DummyModel(),
+        scaler=_DummyScaler(),
+        metadata=metadata or {},
+    )
+
+
+def _inference_service(
+    artifacts: LoadedArtifacts,
+    df: pd.DataFrame | None = None,
+    source: str = "mock",
+) -> InferenceService:
+    market_df = df if df is not None else _mock_market_df()
+    return InferenceService(
+        artifacts=artifacts,
+        market_data=_StaticMarketDataPort(market_df, source),
+    )
+
+
 def test_download_market_data_uses_binance_fallback(monkeypatch):
     import src.infrastructure.market_data as market_data
 
@@ -86,7 +121,13 @@ def test_download_market_data_uses_binance_fallback(monkeypatch):
 
 
 def test_make_tools_returns_three_tools_and_handles_missing_artifacts():
-    tools = react_agent._make_tools({})
+    artifacts = LoadedArtifacts(model=None, scaler=None)
+
+    class _UnusedService:
+        def predict(self, ticker: str, use_partial_candle: bool = False) -> InferenceResult:  # noqa: ARG002
+            raise AssertionError("não deveria chamar o serviço sem artefatos")
+
+    tools = react_agent._make_tools(artifacts, _UnusedService())
 
     assert len(tools) == 3
 
@@ -96,12 +137,37 @@ def test_make_tools_returns_three_tools_and_handles_missing_artifacts():
     assert "Modelo não disponível" in output
 
 
+def test_previsao_tool_delegates_to_inference_service() -> None:
+    artifacts = _loaded_artifacts()
+
+    class _SpyService:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, bool]] = []
+
+        def predict(self, ticker: str, use_partial_candle: bool = False) -> InferenceResult:
+            self.calls.append((ticker, use_partial_candle))
+            return InferenceResult(
+                predicted_price_usd=101234.56,
+                last_close=100999.0,
+                last_observed_ts=pd.Timestamp("2026-04-28T10:00:00Z"),
+                data_source="spy",
+                estimated_error_pct=2.5,
+                confidence_interval=ConfidenceInterval(low_usd=100900.0, high_usd=101500.0),
+            )
+
+    spy_service = _SpyService()
+    tools = react_agent._make_tools(artifacts, spy_service)
+
+    previsao = _find_tool(tools, "previsao_bitcoin").invoke("Preveja o BTC")
+
+    assert spy_service.calls == [("BTC-USD", False)]
+    assert "Previsão BTC-USD" in previsao
+    assert "Fonte de dados: spy" in previsao
+
+
 def test_tools_execute_with_mocks_and_return_expected_sections(monkeypatch):
-    ml_artifacts = {
-        "model": _DummyModel(),
-        "scaler": _DummyScaler(),
-        "metadata": {"n_features": 1, "metrics": {"rmse_price": 100.0}},
-    }
+    artifacts = _loaded_artifacts({"n_features": 1, "metrics": {"rmse_price": 100.0}})
+    service = _inference_service(artifacts, _mock_market_df(), "mock")
 
     monkeypatch.setattr(
         react_agent,
@@ -122,7 +188,7 @@ def test_tools_execute_with_mocks_and_return_expected_sections(monkeypatch):
         ],
     )
 
-    tools = react_agent._make_tools(ml_artifacts)
+    tools = react_agent._make_tools(artifacts, service)
     previsao_tool = _find_tool(tools, "previsao_bitcoin")
     cotacao_tool = _find_tool(tools, "cotacao_atual")
     rag_tool = _find_tool(tools, "CryptoKnowledgeRAG")
@@ -138,24 +204,25 @@ def test_tools_execute_with_mocks_and_return_expected_sections(monkeypatch):
     assert "[Contexto 1]" in contexto
 
 
-def test_build_agent_requires_bedrock_region(monkeypatch):
+def test_create_agent_llm_requires_bedrock_region(monkeypatch):
     monkeypatch.delenv("BEDROCK_AWS_REGION", raising=False)
     monkeypatch.delenv("AWS_REGION", raising=False)
     monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
     with pytest.raises(OSError, match="Bedrock"):
-        react_agent.build_agent({})
+        react_agent.create_agent_llm()
 
 
 def test_build_agent_constructs_executor_with_three_tools(monkeypatch):
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
-
-    monkeypatch.setattr(react_agent, "ChatBedrock", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(react_agent, "create_react_agent", lambda llm, tools, prompt: "fake-agent")
     monkeypatch.setattr(
         react_agent,
         "_make_tools",
-        lambda artifacts: [SimpleNamespace(name="a"), SimpleNamespace(name="b"), SimpleNamespace(name="c")],
+        lambda artifacts, inference_service: [
+            SimpleNamespace(name="a"),
+            SimpleNamespace(name="b"),
+            SimpleNamespace(name="c"),
+        ],
     )
 
     class _FakeExecutor:
@@ -164,23 +231,47 @@ def test_build_agent_constructs_executor_with_three_tools(monkeypatch):
 
     monkeypatch.setattr(react_agent, "AgentExecutor", _FakeExecutor)
 
-    executor: Any = react_agent.build_agent({})
+    executor: Any = react_agent.build_agent(
+        _loaded_artifacts(),
+        _inference_service(_loaded_artifacts()),
+        _DummyLLM(),
+    )
 
     assert len(executor.kwargs["tools"]) == 3
     assert executor.kwargs["max_iterations"] == 6
     assert executor.kwargs["return_intermediate_steps"] is True
 
 
+def test_build_agent_reads_verbose_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_VERBOSE", "false")
+    monkeypatch.setattr(react_agent, "create_react_agent", lambda llm, tools, prompt: "fake-agent")
+    monkeypatch.setattr(
+        react_agent,
+        "_make_tools",
+        lambda artifacts, inference_service: [
+            SimpleNamespace(name="a"),
+            SimpleNamespace(name="b"),
+            SimpleNamespace(name="c"),
+        ],
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _CapturingExecutor:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(react_agent, "AgentExecutor", _CapturingExecutor)
+
+    react_agent.build_agent(_loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM())
+
+    assert captured["verbose"] is False
+
+
 def test_agent_response_can_combine_forecast_with_rag_context(monkeypatch):
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    artifacts = _loaded_artifacts({"n_features": 1, "metrics": {"mape_price": 2.0}})
+    service = _inference_service(artifacts, _mock_market_df(), "mock")
 
-    ml_artifacts = {
-        "model": _DummyModel(),
-        "scaler": _DummyScaler(),
-        "metadata": {"n_features": 1, "metrics": {"mape_price": 2.0}},
-    }
-
-    monkeypatch.setattr(react_agent, "ChatBedrock", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(react_agent, "create_react_agent", lambda llm, tools, prompt: "fake-agent")
     monkeypatch.setattr(
         react_agent,
@@ -215,7 +306,7 @@ def test_agent_response_can_combine_forecast_with_rag_context(monkeypatch):
 
     monkeypatch.setattr(react_agent, "AgentExecutor", _FakeExecutor)
 
-    executor = react_agent.build_agent(ml_artifacts)
+    executor = react_agent.build_agent(artifacts, service, _DummyLLM())
     result = executor.invoke({"input": "Qual a previsão e o contexto?"})
 
     assert "Previsão BTC-USD" in result["output"]
@@ -276,23 +367,16 @@ def test_build_agent_raises_value_error_when_fewer_than_three_tools(
 
     O agente ReAct exige exactamente 3 tools (PrevisaoBitcoin, CotacaoAtual,
     CryptoKnowledgeRAG). Receber menos deve falhar imediatamente, antes de
-    qualquer instanciação de ChatBedrock ou AgentExecutor.
+    qualquer instanciação de AgentExecutor.
 
-    Arrange: mocks de ChatBedrock e _make_tools (retorna lista com 2 tools).
-    Act: chama build_agent({}).
+    Arrange: mock de _make_tools (retorna lista com 2 tools).
+    Act: chama build_agent(...).
     Assert: ValueError com mensagem mencionando "3 tools".
     """
-    # Arrange
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.setattr(
-        react_agent,
-        "ChatBedrock",
-        lambda **kwargs: SimpleNamespace(**kwargs),
-    )
     monkeypatch.setattr(
         react_agent,
         "_make_tools",
-        lambda artifacts: [
+        lambda artifacts, inference_service: [
             SimpleNamespace(name="tool_a"),
             SimpleNamespace(name="tool_b"),
         ],
@@ -300,7 +384,7 @@ def test_build_agent_raises_value_error_when_fewer_than_three_tools(
 
     # Act & Assert
     with pytest.raises(ValueError, match="3 tools"):
-        react_agent.build_agent({})
+        react_agent.build_agent(_loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM())
 
 
 def test_build_agent_raises_value_error_when_zero_tools(
@@ -308,22 +392,15 @@ def test_build_agent_raises_value_error_when_zero_tools(
 ) -> None:
     """Verifica que build_agent levanta ValueError quando _make_tools retorna lista vazia.
 
-    Arrange: mocks de ChatBedrock e _make_tools (retorna []).
-    Act: chama build_agent({}).
+    Arrange: mock de _make_tools (retorna []).
+    Act: chama build_agent(...).
     Assert: ValueError é levantado.
     """
-    # Arrange
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.setattr(
-        react_agent,
-        "ChatBedrock",
-        lambda **kwargs: SimpleNamespace(**kwargs),
-    )
-    monkeypatch.setattr(react_agent, "_make_tools", lambda artifacts: [])
+    monkeypatch.setattr(react_agent, "_make_tools", lambda artifacts, inference_service: [])
 
     # Act & Assert
     with pytest.raises(ValueError):
-        react_agent.build_agent({})
+        react_agent.build_agent(_loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM())
 
 
 def test_build_agent_instantiates_executor_with_exactly_three_tools(
@@ -334,17 +411,10 @@ def test_build_agent_instantiates_executor_with_exactly_three_tools(
     Quando _make_tools devolve exactamente 3 tools e o ambiente está configurado,
     build_agent deve completar sem erros e construir o executor com as 3 ferramentas.
 
-    Arrange: mocks de ChatBedrock, create_react_agent, _make_tools e AgentExecutor.
-    Act: chama build_agent({}).
+    Arrange: mocks de create_react_agent, _make_tools e AgentExecutor.
+    Act: chama build_agent(...).
     Assert: AgentExecutor recebeu tools com len == 3 e max_iterations == 6.
     """
-    # Arrange
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.setattr(
-        react_agent,
-        "ChatBedrock",
-        lambda **kwargs: SimpleNamespace(**kwargs),
-    )
     monkeypatch.setattr(
         react_agent,
         "create_react_agent",
@@ -353,7 +423,7 @@ def test_build_agent_instantiates_executor_with_exactly_three_tools(
     monkeypatch.setattr(
         react_agent,
         "_make_tools",
-        lambda artifacts: [
+        lambda artifacts, inference_service: [
             SimpleNamespace(name="previsao_bitcoin"),
             SimpleNamespace(name="cotacao_atual"),
             SimpleNamespace(name="CryptoKnowledgeRAG"),
@@ -369,7 +439,7 @@ def test_build_agent_instantiates_executor_with_exactly_three_tools(
     monkeypatch.setattr(react_agent, "AgentExecutor", _CapturingExecutor)
 
     # Act
-    react_agent.build_agent({})
+    react_agent.build_agent(_loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM())
 
     # Assert
     assert len(captured["tools"]) == 3, (
@@ -383,17 +453,17 @@ def test_build_agent_instantiates_executor_with_exactly_three_tools(
     )
 
 
-def test_build_agent_raises_os_error_when_bedrock_region_missing(
+def test_create_agent_llm_raises_os_error_when_bedrock_region_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verifica que build_agent levanta OSError quando a região AWS não está configurada.
+    """Verifica que create_agent_llm levanta OSError quando a região AWS não está configurada.
 
-    Sem BEDROCK_AWS_REGION / AWS_REGION / AWS_DEFAULT_REGION definidas, o agente
+    Sem BEDROCK_AWS_REGION / AWS_REGION / AWS_DEFAULT_REGION definidas, a factory
     não pode criar o cliente Bedrock e deve falhar com mensagem clara antes de
     qualquer chamada de rede.
 
     Arrange: remove todas as env vars de região.
-    Act: chama build_agent({}).
+    Act: chama create_agent_llm().
     Assert: OSError com "Bedrock" na mensagem.
     """
     # Arrange
@@ -403,4 +473,4 @@ def test_build_agent_raises_os_error_when_bedrock_region_missing(
 
     # Act & Assert
     with pytest.raises(OSError, match="Bedrock"):
-        react_agent.build_agent({})
+        react_agent.create_agent_llm()

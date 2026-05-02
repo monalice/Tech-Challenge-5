@@ -6,8 +6,8 @@ Ferramentas disponíveis:
     - CryptoKnowledgeRAG    : recupera notícias e contexto cripto a partir de um vector store local.
 
 Uso:
-    from src.agent.react_agent import build_agent
-    executor = build_agent(ml_artifacts)
+    from src.agent.react_agent import build_agent, create_agent_llm
+    executor = build_agent(artifacts, inference_service, create_agent_llm())
     result   = executor.invoke({"input": "Qual a previsão do BTC para a próxima hora?"})
     logger.info(result["output"])
 """
@@ -16,10 +16,8 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from typing import Any, cast
 
-import numpy as np
 import pandas as pd
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_aws import ChatBedrock
@@ -36,19 +34,14 @@ except ImportError:
 
 from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
 from src.agent.llm_config import resolve_aws_region
-from src.features.technical_features import build_feature_matrix
+from src.domain.inference import DataServiceError, InferenceService, InsufficientDataError
+from src.domain.ports import LLMPort, LoadedArtifacts
 from src.infrastructure.market_data import BinanceSource, FallbackMarketData, YFinanceSource
 from src.security.guardrails import InputGuardrail, OutputGuardrail
-from src.domain.constants import (
-    LOOKBACK,
-    SUPPORTED_TICKER,
-    Z_SCORE_95_CONFIDENCE,
-)
+from src.domain.constants import SUPPORTED_TICKER
 from src.domain.time_utils import (
     remove_incomplete_hour_candle,
-    remove_incomplete_hour_candle_df,
     timestamp_to_brt_iso,
-    timestamp_to_utc_iso,
 )
 
 logger = logging.getLogger("stockcast.agent")
@@ -133,6 +126,19 @@ def _resolve_agent_top_k() -> int | None:
     return _get_env_optional_int("AGENT_LLM_TOP_K", "GEMINI_TOP_K")
 
 
+def _resolve_agent_verbose() -> bool:
+    """Resolve o modo verbose do AgentExecutor a partir de ``AGENT_VERBOSE``.
+
+    Returns:
+        ``True`` por padrão para preservar o comportamento atual; ``False``
+        quando a variável estiver definida com um valor falso canônico.
+    """
+    raw_value = os.getenv("AGENT_VERBOSE")
+    if raw_value is None:
+        return True
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ---------------------------------------------------------------------------
 # Download de dados de mercado (delega para infrastructure.market_data)
 # ---------------------------------------------------------------------------
@@ -156,11 +162,49 @@ def _download_market_data(ticker: str) -> tuple[pd.DataFrame, str]:
 
 
 # ---------------------------------------------------------------------------
-# Fábrica de ferramentas (encapsula ml_artifacts via closure)
+# Fábrica de LLM
 # ---------------------------------------------------------------------------
 
 
-def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
+def create_agent_llm() -> LLMPort:
+    """Cria a instância de LLM configurada para o agente ReAct.
+
+    Returns:
+        Instância configurada de ChatBedrock compatível com :class:`LLMPort`.
+
+    Raises:
+        OSError: Quando nenhuma região AWS válida está configurada.
+    """
+    bedrock_region = resolve_aws_region()
+    if not bedrock_region:
+        raise OSError(
+            "A região AWS para Amazon Bedrock não está definida. Use BEDROCK_AWS_REGION, AWS_REGION ou AWS_DEFAULT_REGION."
+        )
+
+    model_kwargs: dict[str, Any] = {"temperature": _resolve_agent_temperature()}
+    top_p = _resolve_agent_top_p()
+    if top_p is not None:
+        model_kwargs["top_p"] = top_p
+    top_k = _resolve_agent_top_k()
+    if top_k is not None:
+        model_kwargs["top_k"] = top_k
+
+    return cast(
+        LLMPort,
+        ChatBedrock(
+            model_id=DEFAULT_AGENT_LLM_MODEL,
+            region_name=bedrock_region,
+            model_kwargs=model_kwargs,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fábrica de ferramentas (encapsula dependências via closure)
+# ---------------------------------------------------------------------------
+
+
+def _make_tools(artifacts: LoadedArtifacts, inference_service: InferenceService) -> list[Any]:
     """Cria e retorna as 3 ferramentas LangChain para o agente ReAct."""
 
     # ------------------------------------------------------------------
@@ -168,112 +212,43 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
     # ------------------------------------------------------------------
     @tool
     def previsao_bitcoin(query: str) -> str:  # noqa: ARG001
-        """Executa o pipeline de inferência LSTM e retorna a previsão do próximo fechamento
-        horário do Bitcoin (BTC-USD) em USD. Sempre chame esta ferramenta quando o usuário
-        perguntar sobre previsão, forecast ou próximo preço do BTC.
-        O parâmetro 'query' pode ser qualquer string — ela é ignorada internamente."""
-        model = ml_artifacts.get("model")
-        scaler = ml_artifacts.get("scaler")
+        """Executa a previsão do próximo fechamento horário do BTC via InferenceService.
+
+        Atua apenas como adaptador de apresentação: delega a inferência ao serviço
+        de domínio e formata a resposta textual consumida pelo agente ReAct.
+        """
+        model = artifacts.model
+        scaler = artifacts.scaler
         if model is None or scaler is None:
             return "Modelo não disponível. Os artefatos ainda não foram carregados."
 
         try:
-            metadata = ml_artifacts.get("metadata", {})
-            n_features = metadata.get("n_features", 1)
-            scaler_return = ml_artifacts.get("scaler_return")
-
-            df, data_source = _download_market_data(SUPPORTED_TICKER)
-
-            if n_features > 1:
-                if not {"High", "Low", "Volume"}.issubset(df.columns):
-                    return "Dados OHLCV indisponíveis para inferência multi-feature."
-                ohlcv = df[["Close", "High", "Low", "Volume"]].dropna()
-                ohlcv = remove_incomplete_hour_candle_df(ohlcv)
-
-                features_df = build_feature_matrix(ohlcv)
-
-                if len(features_df) < LOOKBACK:
-                    return (
-                        "Dados insuficientes: "
-                        f"{len(features_df)} candles disponíveis, necessário {LOOKBACK}."
-                    )
-
-                window = features_df.to_numpy()[-LOOKBACK:]
-                scaled_input = scaler.transform(window)
-                X_input = scaled_input.reshape(1, LOOKBACK, n_features)
-
-                predicted_scaled = model.predict(X_input, verbose=0)
-
-                if scaler_return is not None:
-                    predicted_log_return = float(
-                        scaler_return.inverse_transform(predicted_scaled.reshape(-1, 1)).reshape(
-                            -1
-                        )[0]
-                    )
-                else:
-                    try:
-                        min_val = float(scaler.data_min_[0])
-                        max_val = float(scaler.data_max_[0])
-                        predicted_log_return = (
-                            float(predicted_scaled.reshape(-1)[0]) * (max_val - min_val) + min_val
-                        )
-                    except (AttributeError, IndexError):
-                        predicted_log_return = float(predicted_scaled.reshape(-1)[0])
-
-                last_close = float(ohlcv["Close"].iloc[-1])
-                last_ts = pd.Timestamp(features_df.index[-1])
-            else:
-                close_series = df["Close"].dropna()
-                close_series = remove_incomplete_hour_candle(close_series)
-                log_price = pd.Series(np.log(close_series.values), index=close_series.index)
-                ret_series = log_price.diff().dropna()
-
-                if len(ret_series) < LOOKBACK:
-                    return (
-                        "Dados insuficientes: "
-                        f"{len(ret_series)} candles disponíveis, necessário {LOOKBACK}."
-                    )
-
-                last_returns = np.asarray(ret_series.to_numpy()[-LOOKBACK:], dtype=float).reshape(
-                    -1, 1
-                )
-                scaled_input = scaler.transform(last_returns)
-                X_input = scaled_input.reshape(1, LOOKBACK, 1)
-
-                predicted_scaled = model.predict(X_input, verbose=0)
-                predicted_log_return = float(
-                    scaler.inverse_transform(predicted_scaled).reshape(-1)[0]
-                )
-                last_close = float(close_series.iloc[-1])
-                last_ts = pd.Timestamp(close_series.index[-1])
-
-            predicted_price = last_close * np.exp(predicted_log_return)
-            forecast_for_ts = last_ts + pd.Timedelta(hours=1)
+            result = inference_service.predict(SUPPORTED_TICKER, use_partial_candle=False)
+            forecast_for_ts = result.last_observed_ts + pd.Timedelta(hours=1)
             forecast_close_ts = forecast_for_ts + pd.Timedelta(hours=1) - pd.Timedelta(seconds=1)
 
-            # Incerteza (MAPE/RMSE do metadata)
-            metrics = metadata.get("metrics", {}) if isinstance(metadata, dict) else {}
-            mape = metrics.get("mape_price")
-            rmse = metrics.get("rmse_price")
             confidence_info = ""
-            if rmse is not None:
-                margin = Z_SCORE_95_CONFIDENCE * float(rmse)
-                ci_low = max(0.0, predicted_price - margin)
-                ci_high = predicted_price + margin
-                confidence_info = f" | IC 95%: [{ci_low:,.2f} – {ci_high:,.2f}] USD"
-            elif mape is not None:
-                confidence_info = f" | erro estimado: {float(mape):.2f}%"
+            if result.confidence_interval is not None:
+                confidence_info = (
+                    " | IC 95%: "
+                    f"[{result.confidence_interval.low_usd:,.2f} – "
+                    f"{result.confidence_interval.high_usd:,.2f}] USD"
+                )
+            elif result.estimated_error_pct is not None:
+                confidence_info = f" | erro estimado: {float(result.estimated_error_pct):.2f}%"
 
             result = (
                 f"Previsão BTC-USD para {timestamp_to_brt_iso(forecast_for_ts)} (BRT): "
-                f"**USD {predicted_price:,.2f}**{confidence_info}\n"
-                f"Último candle usado: {timestamp_to_brt_iso(last_ts)} (BRT)\n"
+                f"**USD {result.predicted_price_usd:,.2f}**{confidence_info}\n"
+                f"Último candle usado: {timestamp_to_brt_iso(result.last_observed_ts)} (BRT)\n"
                 f"Fechamento previsto até: {timestamp_to_brt_iso(forecast_close_ts)} (BRT)\n"
-                f"Fonte de dados: {data_source}"
+                f"Fonte de dados: {result.data_source}"
             )
             logger.info("[agent:previsao_bitcoin] %s", result)
             return result
-
+        except (DataServiceError, InsufficientDataError) as exc:
+            logger.warning("[agent:previsao_bitcoin] falha de domínio: %s", exc)
+            return str(exc)
         except Exception as exc:
             logger.error("[agent:previsao_bitcoin] erro: %s", exc, exc_info=True)
             return f"Erro ao gerar previsão: {exc}"
@@ -529,39 +504,23 @@ _REACT_PROMPT = PromptTemplate.from_template(_REACT_PROMPT_TEMPLATE)
 # ---------------------------------------------------------------------------
 
 
-def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
+def build_agent(
+    artifacts: LoadedArtifacts,
+    inference_service: InferenceService,
+    llm: LLMPort,
+) -> AgentExecutor:
     """Constrói e retorna um AgentExecutor ReAct configurado com as 3 ferramentas.
 
-    Requer uma região AWS configurada e credenciais válidas para Amazon Bedrock.
-
     Args:
-        ml_artifacts: dicionário compartilhado com 'model', 'scaler', 'scaler_return' e 'metadata'.
+        artifacts: Artefatos carregados do modelo.
+        inference_service: Serviço de inferência injetado na tool de previsão.
+        llm: Instância de LLM já configurada, compatível com :class:`LLMPort`.
 
     Returns:
         AgentExecutor pronto para receber ``{"input": "<pergunta>"}``
         via ``.invoke()``.
     """
-    bedrock_region = resolve_aws_region()
-    if not bedrock_region:
-        raise OSError(
-            "A região AWS para Amazon Bedrock não está definida. Use BEDROCK_AWS_REGION, AWS_REGION ou AWS_DEFAULT_REGION."
-        )
-
-    model_kwargs: dict[str, Any] = {"temperature": _resolve_agent_temperature()}
-    top_p = _resolve_agent_top_p()
-    if top_p is not None:
-        model_kwargs["top_p"] = top_p
-    top_k = _resolve_agent_top_k()
-    if top_k is not None:
-        model_kwargs["top_k"] = top_k
-
-    llm = ChatBedrock(
-        model_id=DEFAULT_AGENT_LLM_MODEL,
-        region_name=bedrock_region,
-        model_kwargs=model_kwargs,
-    )
-
-    tools = _make_tools(ml_artifacts)
+    tools = _make_tools(artifacts, inference_service)
     if len(tools) < 3:
         raise ValueError(
             "A arquitetura de referência exige no mínimo 3 tools customizadas para o agente ReAct."
@@ -593,7 +552,7 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
         agent=agent,
         tools=tools,
         callbacks=callbacks if callbacks else None,
-        verbose=True,
+        verbose=_resolve_agent_verbose(),
         handle_parsing_errors=True,
         max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "6")),
         return_intermediate_steps=True,
