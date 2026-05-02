@@ -40,7 +40,10 @@ from src.domain.constants import (
     SCALER_RETURN_PATH,
     TICKER,
 )
-from src.features.technical_features import FEATURE_COLUMNS, build_feature_matrix as _build_feature_matrix
+from src.domain.features.technical_features import (
+    FEATURE_COLUMNS,
+    build_feature_matrix as _build_feature_matrix,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)

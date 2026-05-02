@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.features.technical_features import (
+from src.domain.features.technical_features import (
     FEATURE_COLUMNS,
     build_feature_matrix,
     compute_bollinger_pct_b,

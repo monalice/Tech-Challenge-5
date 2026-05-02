@@ -4,7 +4,7 @@ import pandera.pandas as pa
 import pytest
 
 from src import app
-from src.features.technical_features import build_feature_matrix
+from src.domain.features.technical_features import build_feature_matrix
 
 
 def _raw_schema() -> pa.DataFrameSchema:

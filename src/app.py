@@ -29,19 +29,19 @@ from prometheus_client import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.domain.drift.detection import detect_data_drift
-from src.features.technical_features import (
+from src.domain.features.technical_features import (
     compute_bollinger_pct_b as _compute_bollinger_pct_b,  # noqa: F401
 )
-from src.features.technical_features import (
+from src.domain.features.technical_features import (
     compute_macd_signal as _compute_macd_signal,  # noqa: F401
 )
-from src.features.technical_features import (
+from src.domain.features.technical_features import (
     compute_rsi as _compute_rsi,  # noqa: F401
 )
-from src.features.technical_features import (
+from src.domain.features.technical_features import (
     compute_sma_ratio as _compute_sma_ratio,  # noqa: F401
 )
-from src.features.technical_features import (
+from src.domain.features.technical_features import (
     compute_volume_ratio as _compute_volume_ratio,  # noqa: F401
 )
 from src.security.guardrails import InputGuardrail, OutputGuardrail

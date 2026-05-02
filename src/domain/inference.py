@@ -20,7 +20,7 @@ import pandas as pd
 from src.domain.constants import LOOKBACK, Z_SCORE_95_CONFIDENCE
 from src.domain.ports import LoadedArtifacts, MarketDataPort
 from src.domain.time_utils import remove_incomplete_hour_candle
-from src.features.technical_features import build_feature_matrix
+from src.domain.features.technical_features import build_feature_matrix
 
 logger = logging.getLogger("stockcast.inference")
 
