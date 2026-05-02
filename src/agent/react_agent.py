@@ -56,7 +56,7 @@ YFINANCE_TIMEOUT_SECONDS = 10
 YFINANCE_MAX_RETRIES = 2
 DEFAULT_AGENT_LLM_MODEL = os.getenv(
     "AGENT_LLM_MODEL",
-    os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"),
+    os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
 )
 
 
