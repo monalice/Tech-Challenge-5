@@ -8,13 +8,9 @@ from contextlib import asynccontextmanager
 from typing import Any
 import joblib
 import mlflow
-import numpy as np
 import pandas as pd
 import psutil
 
-# IMPORTANTE (Windows): tensorflow deve ser importado cedo para evitar conflito
-# de DLL que causa crash (exit code -1073741819)
-import tensorflow as tf
 import uvicorn
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -51,6 +47,7 @@ from src.agent.llm_config import (
     publish_cloudwatch_llm_metrics,
     validate_bedrock_configuration_for_startup,
 )
+from src.adapters.ml.model_loader import load_trained_model
 from src.domain.constants import (
     LOOKBACK,
     MODEL_PATH,
@@ -69,6 +66,14 @@ from src.domain.time_utils import (
     remove_incomplete_hour_candle,
     timestamp_to_brt_iso,
     timestamp_to_utc_iso,
+)
+from src.use_cases.health_check import perform_health_checks
+from src.use_cases.market_cache import (
+    CACHE_TTL_SECONDS,
+    _cache as market_cache,
+    get_cached_market_data,
+    get_cached_source,
+    set_cached_market_data,
 )
 
 # --- Logging estruturado ---
@@ -236,7 +241,6 @@ class DriftCheckRequest(BaseModel):
 # --- Configuração geral ---
 SCALER_RETURN_PATH = "models/scaler_btc_return.gz"
 MODEL_META_PATH = "models/model_metadata_btc.json"
-CACHE_TTL_SECONDS = 30
 YFINANCE_MAX_RETRIES = 3
 PREDICTIONS_HISTORY_MAX = 100
 
@@ -246,7 +250,6 @@ _APP_MARKET_DATA: FallbackMarketData = FallbackMarketData(
     fallback=BinanceSource(),
     max_retries=YFINANCE_MAX_RETRIES,
 )
-market_cache: dict[str, dict[str, Any]] = {}
 
 # Histórico circular de predições (MLOps)
 prediction_log: collections.deque[dict[str, Any]] = collections.deque(
@@ -287,54 +290,6 @@ METRIC_MEMORY = Gauge(
 )
 
 
-# --- Utilitários ---
-def get_cached_market_data(ticker: str) -> pd.DataFrame | None:
-    """Recupera dados de mercado do cache em memória se ainda estiverem válidos.
-
-    Args:
-        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
-
-    Returns:
-        Cópia do DataFrame cacheado quando o TTL não expirou; ``None`` caso contrário.
-    """
-    cache_entry = market_cache.get(ticker)
-    if not cache_entry:
-        return None
-
-    age_seconds = time.time() - cache_entry["cached_at"]
-    if age_seconds > CACHE_TTL_SECONDS:
-        return None
-
-    return cache_entry["data"].copy()
-
-
-def set_cached_market_data(ticker: str, data: pd.DataFrame, source: str) -> None:
-    """Armazena dados de mercado no cache em memória com timestamp de inserção.
-
-    Args:
-        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
-        data: DataFrame com colunas de OHLCV a ser cacheado.
-        source: Identificador da fonte dos dados (ex: ``"yfinance"`` ou ``"binance"``).
-    """
-    market_cache[ticker] = {"cached_at": time.time(), "data": data.copy(), "source": source}
-
-
-def get_cached_source(ticker: str) -> str:
-    """Retorna a fonte de dados registrada no cache para o ticker informado.
-
-    Args:
-        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
-
-    Returns:
-        Nome da fonte (ex: ``"yfinance"``, ``"binance"``), ou ``"unknown"`` quando
-        o ticker não está no cache.
-    """
-    entry = market_cache.get(ticker)
-    if not entry:
-        return "unknown"
-    return str(entry.get("source", "unknown"))
-
-
 def estimate_uncertainty(
     predicted_price: float, metadata: dict[str, Any]
 ) -> tuple[float | None, ConfidenceIntervalResponse | None]:
@@ -354,24 +309,6 @@ def estimate_uncertainty(
     if ci is None:
         return err_pct, None
     return err_pct, ConfidenceIntervalResponse(low_usd=ci.low_usd, high_usd=ci.high_usd)
-
-
-def load_trained_model(model_path: str) -> Any:
-    """Carrega um modelo Keras/TensorFlow a partir do caminho especificado.
-
-    Args:
-        model_path: Caminho relativo ou absoluto para o arquivo ``.keras`` ou ``SavedModel``.
-
-    Returns:
-        Objeto de modelo Keras pronto para inferência.
-
-    Raises:
-        RuntimeError: Se TensorFlow/Keras não estiver disponível no ambiente.
-    """
-    keras_module = getattr(tf, "keras", None)
-    if keras_module is None or not hasattr(keras_module, "models"):
-        raise RuntimeError("TensorFlow/Keras indisponível para carregar o modelo")
-    return keras_module.models.load_model(model_path)
 
 
 # --- Fontes de dados ---
@@ -425,84 +362,6 @@ class _DownloadWithRetryPort:
     def download(self, ticker: str) -> tuple[pd.DataFrame, str]:
         return download_with_retry(ticker)
 
-
-# --- Health checks ---
-def perform_health_checks(artifacts: LoadedArtifacts | None) -> dict[str, Any]:
-    """Executa todos os checks de saúde da API e retorna o resultado consolidado.
-
-    Verifica: (1) disponibilidade dos artefatos ML, (2) capacidade de inferência
-    do modelo, (3) acesso a dados de mercado, e (4) métricas de sistema (CPU/RAM).
-    Atualiza os gauges Prometheus de CPU e memória como efeito colateral.
-
-    Args:
-        artifacts: Artefatos de ML carregados, ou ``None`` quando não disponíveis.
-
-    Returns:
-        Dicionário compatível com :class:`HealthResponse` contendo ``status``,
-        flags de disponibilidade, timestamps do último candle e métricas de sistema.
-    """
-    model: Any | None = artifacts.model if artifacts else None
-    scaler = artifacts.scaler if artifacts else None
-
-    artifacts_ready = model is not None and scaler is not None
-    model_usable = False
-    market_data_accessible = False
-    active_source = None
-    last_market_timestamp_utc = None
-    last_market_timestamp_brt = None
-    issues = []
-
-    if artifacts_ready:
-        try:
-            metadata_check = artifacts.metadata if artifacts else {}
-            n_features = metadata_check.get("n_features", 1)
-            sample_input = np.zeros((1, LOOKBACK, n_features), dtype=np.float32)
-            if model is None:
-                raise ValueError("Modelo indisponível")
-            prediction = model.predict(sample_input, verbose=0)
-            if prediction is None or len(prediction) == 0:
-                raise ValueError("Predição vazia do modelo")
-            model_usable = True
-        except Exception:
-            issues.append("Modelo carregado, mas não respondeu a inferência de saúde")
-    else:
-        issues.append("Artefatos de modelo/scaler não carregados")
-
-    try:
-        df, active_source = download_with_retry(SUPPORTED_TICKER)
-        close_series = df["Close"].dropna()
-        close_series = remove_incomplete_hour_candle(close_series)
-
-        if len(close_series) == 0:
-            raise ValueError("Sem candles válidos")
-
-        market_data_accessible = True
-        last_market_ts = pd.Timestamp(close_series.index[-1])
-        last_market_timestamp_utc = timestamp_to_utc_iso(last_market_ts)
-        last_market_timestamp_brt = timestamp_to_brt_iso(last_market_ts)
-    except HTTPException:
-        issues.append("Dados de mercado indisponíveis em todas as fontes")
-    except Exception:
-        issues.append("Dados de mercado indisponíveis no momento")
-
-    cpu = psutil.cpu_percent()
-    mem = psutil.virtual_memory().percent
-    METRIC_CPU.set(cpu)
-    METRIC_MEMORY.set(mem)
-
-    healthy = artifacts_ready and model_usable and market_data_accessible
-    return {
-        "status": "healthy" if healthy else "degraded",
-        "artifacts_ready": artifacts_ready,
-        "model_usable": model_usable,
-        "market_data_accessible": market_data_accessible,
-        "data_source": active_source,
-        "last_market_timestamp_utc": last_market_timestamp_utc,
-        "last_market_timestamp_brt": last_market_timestamp_brt,
-        "cpu_usage": cpu,
-        "memory_usage": mem,
-        "details": None if healthy else " | ".join(issues),
-    }
 
 # --- Lifecycle ---
 @asynccontextmanager
@@ -593,7 +452,12 @@ def health_check(request: Request) -> dict[str, Any]:
         Dicionário compatível com :class:`HealthResponse`.
     """
     _artifacts: LoadedArtifacts | None = getattr(request.app.state, "artifacts", None)
-    return perform_health_checks(_artifacts)
+    return perform_health_checks(
+        _artifacts,
+        download_market_data=download_with_retry,
+        metric_cpu=METRIC_CPU,
+        metric_memory=METRIC_MEMORY,
+    )
 
 
 @app.get(
