@@ -48,6 +48,16 @@ output "drift_schedule_rule_name" {
   value       = aws_cloudwatch_event_rule.daily_drift_workflow.name
 }
 
+output "llm_degradation_sns_topic_arn" {
+  description = "SNS topic ARN for LLM degradation notifications"
+  value       = aws_sns_topic.llm_degradation_alerts.arn
+}
+
+output "llm_error_rate_alarm_name" {
+  description = "CloudWatch alarm name for LLM error rate"
+  value       = aws_cloudwatch_metric_alarm.llm_error_rate_high.alarm_name
+}
+
 output "google_secret_arn" {
   description = "Secrets Manager ARN for GOOGLE_API_KEY"
   value       = aws_secretsmanager_secret.google_api_key.arn

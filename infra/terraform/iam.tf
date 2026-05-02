@@ -64,6 +64,20 @@ data "aws_iam_policy_document" "ecs_task_bedrock" {
       "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:application-inference-profile/*"
     ]
   }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "cloudwatch:PutMetricData"
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = [var.llm_metrics_namespace]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "ecs_task_bedrock" {

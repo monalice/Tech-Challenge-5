@@ -6,6 +6,7 @@ import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -87,6 +88,8 @@ INSECURE_BEDROCK_CONFIG_VALUES = {
     "none",
     "null",
 }
+DEFAULT_CLOUDWATCH_NAMESPACE = "StockCast/LLM"
+CLOUDWATCH_METRIC_DIMENSIONS = ["Service", "Environment", "Endpoint"]
 
 
 # --- Schemas ---
@@ -294,6 +297,64 @@ METRIC_CPU = Gauge(
 METRIC_MEMORY = Gauge(
     "stockcast_memory_usage_percent", "Uso de memória do processo (%)", registry=_prom_registry
 )
+
+
+def _is_true(value: str | None, default: bool = True) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_cloudwatch_region() -> str | None:
+    for env_name in ("BEDROCK_AWS_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"):
+        candidate = os.getenv(env_name)
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _publish_cloudwatch_llm_metrics(*, latency_ms: float, is_error: bool) -> None:
+    if not _is_true(os.getenv("CW_LLM_METRICS_ENABLED"), default=True):
+        return
+
+    try:
+        import boto3  # type: ignore[import-untyped]
+    except Exception as exc:
+        logger.warning("boto3 indisponível para métricas CloudWatch: %s", exc)
+        return
+
+    region_name = _resolve_cloudwatch_region()
+    namespace = os.getenv("CW_LLM_METRICS_NAMESPACE", DEFAULT_CLOUDWATCH_NAMESPACE)
+    service_name = os.getenv("CW_METRIC_SERVICE_NAME", "stockcast")
+    environment_name = os.getenv("CW_METRIC_ENVIRONMENT", os.getenv("APP_ENV", "unknown"))
+    dimensions = [
+        {"Name": "Service", "Value": service_name},
+        {"Name": "Environment", "Value": environment_name},
+        {"Name": "Endpoint", "Value": "/chat"},
+    ]
+
+    metric_data: list[dict[str, Any]] = [
+        {
+            "MetricName": "llm_latency",
+            "Dimensions": dimensions,
+            "Timestamp": datetime.now(timezone.utc),
+            "Value": float(latency_ms),
+            "Unit": "Milliseconds",
+        },
+        {
+            "MetricName": "llm_error_rate",
+            "Dimensions": dimensions,
+            "Timestamp": datetime.now(timezone.utc),
+            "Value": 100.0 if is_error else 0.0,
+            "Unit": "Percent",
+        },
+    ]
+
+    try:
+        cloudwatch = boto3.client("cloudwatch", region_name=region_name)
+        cloudwatch.put_metric_data(Namespace=namespace, MetricData=metric_data)
+    except Exception as exc:
+        logger.error("Falha ao publicar métricas LLM no CloudWatch: %s", exc)
 
 
 # --- Utilitários ---
@@ -935,39 +996,52 @@ def predict_next_hour(
 )
 def chat(request: ChatRequest) -> dict[str, Any]:
     """Endpoint de chat com o Agente ReAct LangChain."""
-    input_validation = input_guardrail.apply(request.message)
-    if not input_validation.allowed:
-        raise HTTPException(status_code=400, detail=input_validation.reason)
-    llm_input = input_validation.sanitized_text or request.message
-
-    # Import lazy para evitar importação circular no nível de módulo
-    from src.agent.react_agent import build_agent  # noqa: PLC0415
+    start_proc = time.perf_counter()
+    is_error = False
 
     try:
-        agent_executor = build_agent(ml_artifacts)
-    except OSError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        input_validation = input_guardrail.apply(request.message)
+        if not input_validation.allowed:
+            is_error = True
+            raise HTTPException(status_code=400, detail=input_validation.reason)
+        llm_input = input_validation.sanitized_text or request.message
 
-    try:
-        result = agent_executor.invoke({"input": llm_input})
-    except Exception as exc:
-        logger.error("Erro no agente ReAct: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Erro no agente: {exc}") from exc
+        # Import lazy para evitar importação circular no nível de módulo
+        from src.agent.react_agent import build_agent  # noqa: PLC0415
 
-    # Extrair passos intermediários
-    steps: list[dict[str, str]] = []
-    for action, observation in result.get("intermediate_steps", []):
-        steps.append(
-            {
-                "tool": getattr(action, "tool", str(action)),
-                "tool_input": str(getattr(action, "tool_input", "")),
-                "observation": output_guardrail.sanitize(str(observation)),
-            }
-        )
+        try:
+            agent_executor = build_agent(ml_artifacts)
+        except OSError as exc:
+            is_error = True
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    safe_output = output_guardrail.sanitize(result.get("output", ""))
+        try:
+            result = agent_executor.invoke({"input": llm_input})
+        except Exception as exc:
+            is_error = True
+            logger.error("Erro no agente ReAct: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Erro no agente: {exc}") from exc
 
-    return {"response": safe_output, "steps": steps}
+        # Extrair passos intermediários
+        steps: list[dict[str, str]] = []
+        for action, observation in result.get("intermediate_steps", []):
+            steps.append(
+                {
+                    "tool": getattr(action, "tool", str(action)),
+                    "tool_input": str(getattr(action, "tool_input", "")),
+                    "observation": output_guardrail.sanitize(str(observation)),
+                }
+            )
+
+        safe_output = output_guardrail.sanitize(result.get("output", ""))
+
+        return {"response": safe_output, "steps": steps}
+    except HTTPException:
+        is_error = True
+        raise
+    finally:
+        latency_ms = (time.perf_counter() - start_proc) * 1000
+        _publish_cloudwatch_llm_metrics(latency_ms=latency_ms, is_error=is_error)
 
 
 if __name__ == "__main__":

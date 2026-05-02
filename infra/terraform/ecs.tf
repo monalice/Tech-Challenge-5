@@ -67,6 +67,22 @@ resource "aws_ecs_task_definition" "app" {
         {
           name  = "MLFLOW_ARTIFACT_URI"
           value = "s3://${aws_s3_bucket.artifacts.id}/mlflow-artifacts"
+        },
+        {
+          name  = "CW_LLM_METRICS_ENABLED"
+          value = "true"
+        },
+        {
+          name  = "CW_LLM_METRICS_NAMESPACE"
+          value = var.llm_metrics_namespace
+        },
+        {
+          name  = "CW_METRIC_SERVICE_NAME"
+          value = var.project_name
+        },
+        {
+          name  = "CW_METRIC_ENVIRONMENT"
+          value = var.environment
         }
       ]
 

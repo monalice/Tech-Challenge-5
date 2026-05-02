@@ -99,3 +99,15 @@ variable "drift_ticker" {
   type        = string
   default     = "BTC-USD"
 }
+
+variable "llm_metrics_namespace" {
+  description = "CloudWatch namespace for custom LLM observability metrics"
+  type        = string
+  default     = "StockCast/LLM"
+}
+
+variable "llm_alarm_email" {
+  description = "Email endpoint for SNS notifications of LLM degradation alarms"
+  type        = string
+  default     = "mlops-alerts@example.com"
+}
