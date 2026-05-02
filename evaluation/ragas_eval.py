@@ -27,28 +27,24 @@ import re
 import sys
 import warnings
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import requests
 from datasets import Dataset
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+
+if TYPE_CHECKING:
+    from langchain_aws import BedrockEmbeddings, ChatBedrock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from ragas import RunConfig, evaluate
-
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
-
 LOGGER = logging.getLogger("evaluation.ragas")
 CONTEXT_SPLIT_PATTERN = re.compile(r"\[Contexto\s+\d+\]\s*", re.IGNORECASE)
 DEFAULT_OUTPUT_PATH = Path("evaluation/ragas_results.json")
-DEFAULT_LLM_MODEL = "models/gemini-2.5-flash"
-DEFAULT_EMBEDDING_MODEL = "models/text-embedding-004"
+DEFAULT_LLM_MODEL = "anthropic.claude-haiku-4-5-20251001-v1:0"
+DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0"
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_EXPECTED_QUESTIONS = 21
 DEFAULT_SEED = 42
@@ -109,24 +105,32 @@ def _get_env_optional_int(primary_key: str, fallback_key: str | None = None) -> 
 
 
 def _resolve_ragas_llm_model() -> str:
-    return os.getenv("RAGAS_LLM_MODEL") or os.getenv("GEMINI_LLM_MODEL") or DEFAULT_LLM_MODEL
+    return os.getenv("RAGAS_LLM_MODEL") or os.getenv("BEDROCK_MODEL_ID") or DEFAULT_LLM_MODEL
 
 
 def _resolve_ragas_embedding_model() -> str:
-    return os.getenv("RAGAS_EMBEDDING_MODEL") or os.getenv("GEMINI_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
+    return os.getenv("RAGAS_EMBEDDING_MODEL") or os.getenv("BEDROCK_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
 
 
 def _resolve_ragas_temperature() -> float:
-    value = _get_env_optional_float("RAGAS_LLM_TEMPERATURE", "GEMINI_TEMPERATURE")
+    value = _get_env_optional_float("RAGAS_LLM_TEMPERATURE", "AGENT_LLM_TEMPERATURE")
     return value if value is not None else DEFAULT_TEMPERATURE
 
 
 def _resolve_ragas_top_p() -> float | None:
-    return _get_env_optional_float("RAGAS_LLM_TOP_P", "GEMINI_TOP_P")
+    return _get_env_optional_float("RAGAS_LLM_TOP_P", "AGENT_LLM_TOP_P")
 
 
 def _resolve_ragas_top_k() -> int | None:
-    return _get_env_optional_int("RAGAS_LLM_TOP_K", "GEMINI_TOP_K")
+    return _get_env_optional_int("RAGAS_LLM_TOP_K", "AGENT_LLM_TOP_K")
+
+
+def _resolve_bedrock_region() -> str | None:
+    return (
+        os.getenv("BEDROCK_AWS_REGION")
+        or os.getenv("AWS_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+    )
 
 
 def _set_reproducibility(seed: int) -> None:
@@ -391,20 +395,37 @@ def _write_json_atomic(output_path: Path, payload: dict[str, Any]) -> None:
     temp_path.replace(output_path)
 
 
-def _build_gemini_clients(llm_model: str, embedding_model: str) -> tuple[ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings]:
+def _load_ragas_runtime() -> tuple[Any, Any, list[Any]]:
+    from ragas import RunConfig, evaluate
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
+
+    return RunConfig, evaluate, [faithfulness, answer_relevancy, context_precision, context_recall]
+
+
+def _build_bedrock_clients(
+    llm_model: str,
+    embedding_model: str,
+    region_name: str,
+) -> tuple["ChatBedrock", "BedrockEmbeddings"]:
+    from langchain_aws import BedrockEmbeddings, ChatBedrock
+
     llm_kwargs: dict[str, Any] = {
-        "model": llm_model,
-        "temperature": _resolve_ragas_temperature(),
+        "model_id": llm_model,
+        "region_name": region_name,
+        "model_kwargs": {"temperature": _resolve_ragas_temperature()},
     }
     top_p = _resolve_ragas_top_p()
     if top_p is not None:
-        llm_kwargs["top_p"] = top_p
+        llm_kwargs["model_kwargs"]["top_p"] = top_p
     top_k = _resolve_ragas_top_k()
     if top_k is not None:
-        llm_kwargs["top_k"] = top_k
+        llm_kwargs["model_kwargs"]["top_k"] = top_k
 
-    llm = ChatGoogleGenerativeAI(**llm_kwargs)
-    embeddings = GoogleGenerativeAIEmbeddings(model=embedding_model)
+    llm = ChatBedrock(**llm_kwargs)
+    embeddings = BedrockEmbeddings(model_id=embedding_model, region_name=region_name)
     return llm, embeddings
 
 
@@ -428,15 +449,20 @@ def evaluate_golden_set(
     records, raw_outputs = _materialize_records(golden_set, api_url, timeout_seconds)
     dataset = Dataset.from_list(records)
     backend = "ragas"
-    google_api_key = os.getenv("GOOGLE_API_KEY")
+    bedrock_region = _resolve_bedrock_region()
     llm_model = _resolve_ragas_llm_model()
     embedding_model = _resolve_ragas_embedding_model()
     metrics: dict[str, float]
     diagnostics: dict[str, dict[str, int]]
 
-    if google_api_key and enable_live_ragas:
+    if bedrock_region and enable_live_ragas:
         try:
-            llm, embeddings = _build_gemini_clients(llm_model=llm_model, embedding_model=embedding_model)
+            RunConfig, evaluate, ragas_metrics = _load_ragas_runtime()
+            llm, embeddings = _build_bedrock_clients(
+                llm_model=llm_model,
+                embedding_model=embedding_model,
+                region_name=bedrock_region,
+            )
 
             # max_workers=1 serializes requests to stay within the 15 RPM free-tier quota.
             run_config = RunConfig(
@@ -453,7 +479,7 @@ def evaluate_golden_set(
             )
             scores = evaluate(
                 dataset,
-                metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
+                metrics=ragas_metrics,
                 llm=llm,
                 embeddings=embeddings,
                 run_config=run_config,
@@ -476,15 +502,15 @@ def evaluate_golden_set(
         if strict_ragas and not enable_live_ragas:
             raise EnvironmentError(
                 "A avaliacao RAGAS com LLM foi desabilitada por padrao para evitar consumo acidental de cota. "
-                "Use --enable-live-ragas junto com --strict-ragas para executar chamadas reais ao Gemini."
+                "Use --enable-live-ragas junto com --strict-ragas para executar chamadas reais ao Amazon Bedrock."
             )
         if strict_ragas:
             raise EnvironmentError(
-                "GOOGLE_API_KEY nao esta definida e --strict-ragas foi habilitado."
+                "BEDROCK_AWS_REGION/AWS_REGION nao esta definida e --strict-ragas foi habilitado."
             )
         backend = "deterministic_offline_fallback"
         LOGGER.warning(
-            "Avaliacao RAGAS online desabilitada ou GOOGLE_API_KEY ausente. Usando fallback deterministico para gerar metricas validas."
+            "Avaliacao RAGAS online desabilitada ou regiao AWS ausente. Usando fallback deterministico para gerar metricas validas."
         )
         metrics, diagnostics = _compute_offline_metrics(records)
         _validate_aggregated_metrics(metrics)
@@ -527,7 +553,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--enable-live-ragas",
         action="store_true",
-        help="Habilita chamadas reais ao Gemini para calcular metricas RAGAS. Sem este flag, o script usa fallback deterministico para evitar consumo acidental de cota.",
+        help="Habilita chamadas reais ao Amazon Bedrock para calcular metricas RAGAS. Sem este flag, o script usa fallback deterministico para evitar consumo acidental de cota.",
     )
     parser.add_argument(
         "--strict-ragas",

@@ -11,11 +11,10 @@ import mlflow
 import mlflow.keras
 import numpy as np
 import pandas as pd
-import pandera as pa
+import pandera.pandas as pa
 import requests
 import yaml  # type: ignore[import-untyped]
 from numpy.typing import NDArray
-from pandera import Check
 
 # IMPORTANTE (Windows): tensorflow e yfinance devem ser importados antes de pandas
 # para evitar conflito de DLL que causa crash (exit code -1073741819)
@@ -24,6 +23,7 @@ import yfinance as yf
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras import Input
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.layers import LSTM, Bidirectional, Dense, Dropout
 from tensorflow.keras.models import Sequential
@@ -97,14 +97,14 @@ REQUIRED_FEATURE_COLUMNS = [
 
 RAW_DATA_SCHEMA = pa.DataFrameSchema(  # type: ignore[no-untyped-call]
     {
-        "Close": pa.Column(float, nullable=False, checks=[Check.gt(0)]),
-        "High": pa.Column(float, nullable=False, checks=[Check.gt(0)]),
-        "Low": pa.Column(float, nullable=False, checks=[Check.gt(0)]),
-        "Volume": pa.Column(float, nullable=False, checks=[Check.ge(0)]),
+        "Close": pa.Column(float, nullable=False, checks=[pa.Check.gt(0)]),
+        "High": pa.Column(float, nullable=False, checks=[pa.Check.gt(0)]),
+        "Low": pa.Column(float, nullable=False, checks=[pa.Check.gt(0)]),
+        "Volume": pa.Column(float, nullable=False, checks=[pa.Check.ge(0)]),
     },
     checks=[
-        Check(lambda df: (df["High"] >= df["Low"]).all(), error="High deve ser >= Low."),
-        Check(
+        pa.Check(lambda df: (df["High"] >= df["Low"]).all(), error="High deve ser >= Low."),
+        pa.Check(
             lambda df: ((df["Close"] >= df["Low"]) & (df["Close"] <= df["High"]))
             .all(),
             error="Close deve estar entre Low e High.",
@@ -116,12 +116,12 @@ RAW_DATA_SCHEMA = pa.DataFrameSchema(  # type: ignore[no-untyped-call]
 
 FEATURE_DATA_SCHEMA = pa.DataFrameSchema(  # type: ignore[no-untyped-call]
     {
-        "log_return": pa.Column(float, nullable=False, checks=[Check.in_range(-1.0, 1.0)]),
-        "rsi": pa.Column(float, nullable=False, checks=[Check.in_range(0.0, 1.0)]),
-        "macd_signal": pa.Column(float, nullable=False, checks=[Check.in_range(-2.0, 2.0)]),
-        "bb_pct_b": pa.Column(float, nullable=False, checks=[Check.in_range(0.0, 1.0)]),
-        "sma_ratio": pa.Column(float, nullable=False, checks=[Check.in_range(-1.0, 1.0)]),
-        "vol_ratio": pa.Column(float, nullable=False, checks=[Check.in_range(0.0, 10.0)]),
+        "log_return": pa.Column(float, nullable=False, checks=[pa.Check.in_range(-1.0, 1.0)]),
+        "rsi": pa.Column(float, nullable=False, checks=[pa.Check.in_range(0.0, 1.0)]),
+        "macd_signal": pa.Column(float, nullable=False, checks=[pa.Check.in_range(-2.0, 2.0)]),
+        "bb_pct_b": pa.Column(float, nullable=False, checks=[pa.Check.in_range(0.0, 1.0)]),
+        "sma_ratio": pa.Column(float, nullable=False, checks=[pa.Check.in_range(-1.0, 1.0)]),
+        "vol_ratio": pa.Column(float, nullable=False, checks=[pa.Check.in_range(0.0, 10.0)]),
     },
     strict=True,
     coerce=True,
@@ -230,6 +230,54 @@ def validate_mlflow_metadata_tags(tags: dict[str, Any], context: str) -> dict[st
             )
 
     return validated
+
+
+def validate_required_training_metadata(
+    *,
+    model_name: str | None,
+    model_version: str | None,
+    training_data_version: str | None,
+    model_type: str | None,
+    owner: str | None,
+    risk_level: str | None,
+) -> dict[str, str]:
+    """Valida metadados obrigatórios da função de treino antes da run MLflow.
+
+    Args:
+        model_name: Nome do modelo no Registry.
+        model_version: Versão semântica definida para o treino.
+        training_data_version: Versão/lineage dos dados usados no treino.
+        model_type: Tipo do modelo (ex.: ``time_series``).
+        owner: Responsável técnico pelo modelo.
+        risk_level: Nível de risco de governança (``low|medium|high|critical``).
+
+    Returns:
+        Dicionário com as tags obrigatórias já validadas.
+
+    Raises:
+        ValueError: Se qualquer tag obrigatória estiver ausente ou vazia.
+    """
+    required_metadata_tags: dict[str, str | None] = {
+        "model_name": model_name,
+        "model_version": model_version,
+        "training_data_version": training_data_version,
+        "model_type": model_type,
+        "owner": owner,
+        "risk_level": risk_level,
+    }
+
+    missing_tags = [
+        key
+        for key, value in required_metadata_tags.items()
+        if value is None or str(value).strip() == ""
+    ]
+    if missing_tags:
+        raise ValueError(
+            "Metadados obrigatórios ausentes para a função de treino: "
+            f"{', '.join(missing_tags)}"
+        )
+
+    return {key: str(value).strip() for key, value in required_metadata_tags.items() if value is not None}
 
 
 def get_git_sha() -> str:
@@ -899,7 +947,8 @@ def build_lstm_architecture(input_shape: tuple[int, int]) -> Sequential:
     """Modelo LSTM bidirecional com múltiplas features para melhor acurácia direcional."""
     model = Sequential(
         [
-            Bidirectional(LSTM(units=64, return_sequences=True), input_shape=input_shape),
+            Input(shape=input_shape),
+            Bidirectional(LSTM(units=64, return_sequences=True)),
             Dropout(0.2),
             LSTM(units=48, return_sequences=True),
             Dropout(0.2),
@@ -985,14 +1034,23 @@ def main() -> None:
     data_lineage = build_training_data_lineage(dataset_path=CACHE_DATA_PATH)
     fairness_status = get_fairness_artifact_status()
 
+    required_metadata_tags = validate_required_training_metadata(
+        model_name=MLFLOW_MODEL_NAME,
+        model_version=TAG_MODEL_VERSION,
+        training_data_version=data_lineage.get("training_data_version"),
+        model_type="time_series",
+        owner=TAG_OWNER,
+        risk_level=TAG_RISK_LEVEL,
+    )
+
     run_tags = {
-        "model_name": MLFLOW_MODEL_NAME,
-        "model_version": TAG_MODEL_VERSION,
-        "model_type": "time_series",
+        "model_name": required_metadata_tags["model_name"],
+        "model_version": required_metadata_tags["model_version"],
+        "model_type": required_metadata_tags["model_type"],
         "metrics": {},
-        "owner": TAG_OWNER,
-        "risk_level": TAG_RISK_LEVEL,
-        "training_data_version": data_lineage["training_data_version"],
+        "owner": required_metadata_tags["owner"],
+        "risk_level": required_metadata_tags["risk_level"],
+        "training_data_version": required_metadata_tags["training_data_version"],
         "git_sha": data_lineage["git_sha"],
         "dvc_data_rev": data_lineage["dvc_data_rev"],
         "dvc_data_hash": data_lineage["dvc_data_hash"],

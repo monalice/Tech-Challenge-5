@@ -75,16 +75,16 @@ def test_write_json_atomic_rejects_nan(tmp_path: Path) -> None:
 def test_load_dotenv_file_sets_variables_without_overwriting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
-        "GOOGLE_API_KEY=from_file\nOTHER_KEY='abc'\n# COMMENT\n",
+        "BEDROCK_AWS_REGION=us-east-1\nOTHER_KEY='abc'\n# COMMENT\n",
         encoding="utf-8",
     )
 
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("BEDROCK_AWS_REGION", raising=False)
     monkeypatch.setenv("OTHER_KEY", "from_env")
 
     reval._load_dotenv_file(dotenv_path)
 
-    assert reval.os.getenv("GOOGLE_API_KEY") == "from_file"
+    assert reval.os.getenv("BEDROCK_AWS_REGION") == "us-east-1"
     assert reval.os.getenv("OTHER_KEY") == "from_env"
 
 
@@ -103,12 +103,12 @@ def test_evaluate_golden_set_uses_offline_fallback_by_default_even_with_api_key(
     golden_path = tmp_path / "golden.json"
     golden_path.write_text(json.dumps(golden_set), encoding="utf-8")
 
-    monkeypatch.setenv("GOOGLE_API_KEY", "dummy-key")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
 
-    def _unexpected_live_clients() -> tuple[object, object]:
-        raise AssertionError("live Gemini clients should not be created without explicit opt-in")
+    def _unexpected_live_clients(*args: object, **kwargs: object) -> tuple[object, object]:
+        raise AssertionError("live Bedrock clients should not be created without explicit opt-in")
 
-    monkeypatch.setattr(reval, "_build_gemini_clients", _unexpected_live_clients)
+    monkeypatch.setattr(reval, "_build_bedrock_clients", _unexpected_live_clients)
 
     result = reval.evaluate_golden_set(golden_path)
 

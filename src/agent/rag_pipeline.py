@@ -1,4 +1,4 @@
-"""RAG pipeline utilities backed by Google embeddings and a local vector store."""
+"""RAG pipeline utilities backed by AWS Bedrock embeddings and a local vector store."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
+from langchain_aws import BedrockEmbeddings
 from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 DEFAULT_EMBEDDING_MODEL = os.getenv(
     "RAG_EMBEDDING_MODEL",
-    os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004"),
+    os.getenv("BEDROCK_EMBEDDING_MODEL", "amazon.titan-embed-text-v2:0"),
 )
 DEFAULT_CHROMA_DIR = Path("data/processed/crypto_news_chroma")
 VectorStoreBackend = Literal["chroma", "faiss"]
@@ -77,20 +77,30 @@ SIMULATED_CRYPTO_NEWS: list[dict[str, str]] = [
 ]
 
 
-def build_google_embeddings(
+def build_bedrock_embeddings(
     model: str = DEFAULT_EMBEDDING_MODEL,
-) -> GoogleGenerativeAIEmbeddings:
-    """Cria o cliente de embeddings Google usado pelo pipeline RAG.
+) -> BedrockEmbeddings:
+    """Cria o cliente de embeddings Bedrock usado pelo pipeline RAG.
 
     Args:
-        model: Identificador do modelo de embeddings Google (ex:
-            ``"models/text-embedding-004"``). Pode ser sobrescrito pela variável
+        model: Identificador do modelo de embeddings Bedrock (ex:
+            ``"amazon.titan-embed-text-v2:0"``). Pode ser sobrescrito pela variável
             de ambiente ``RAG_EMBEDDING_MODEL``.
 
     Returns:
-        Instância de :class:`GoogleGenerativeAIEmbeddings` pronta para uso.
+        Instância de :class:`BedrockEmbeddings` pronta para uso.
     """
-    return GoogleGenerativeAIEmbeddings(model=model)
+    region_name = (
+        os.getenv("BEDROCK_AWS_REGION")
+        or os.getenv("AWS_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+    )
+    if not region_name:
+        raise OSError(
+            "A região AWS para embeddings Bedrock não está definida. "
+            "Use BEDROCK_AWS_REGION, AWS_REGION ou AWS_DEFAULT_REGION."
+        )
+    return BedrockEmbeddings(model_id=model, region_name=region_name)
 
 
 def build_documents(
@@ -149,12 +159,12 @@ def build_vector_store(
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     persist_directory: str | Path | None = None,
 ) -> Any:
-    """Constrói um vector store Chroma ou FAISS usando embeddings Google.
+    """Constrói um vector store Chroma ou FAISS usando embeddings Bedrock.
 
     Args:
         documents: Sequência de documentos LangChain a indexar.
         backend: Backend de vector store a usar: ``"chroma"`` (padrão) ou ``"faiss"``.
-        embedding_model: Identificador do modelo de embeddings Google.
+        embedding_model: Identificador do modelo de embeddings Bedrock.
         persist_directory: Diretório para persistência em disco (apenas Chroma).
             Ignorado quando *backend* é ``"faiss"``.
 
@@ -165,7 +175,7 @@ def build_vector_store(
         ImportError: Se o backend solicitado não estiver disponível no ambiente.
         ValueError: Se *backend* não for ``"chroma"`` nem ``"faiss"``.
     """
-    embeddings = build_google_embeddings(model=embedding_model)
+    embeddings = build_bedrock_embeddings(model=embedding_model)
     docs = list(documents)
 
     if backend == "chroma":

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
-import pandera as pa
-from pandera import Check
+import pandera.pandas as pa
+import pytest
 
 from src import app
 from src.features.technical_features import build_feature_matrix
@@ -14,7 +14,7 @@ def _raw_schema() -> pa.DataFrameSchema:
             "High": pa.Column(float, nullable=False),
             "Low": pa.Column(float, nullable=False),
             "Close": pa.Column(float, nullable=False),
-            "Volume": pa.Column(float, nullable=False, checks=Check.ge(0)),
+            "Volume": pa.Column(float, nullable=False, checks=pa.Check.ge(0)),
         },
         strict=True,
     )
@@ -24,11 +24,11 @@ def _features_schema() -> pa.DataFrameSchema:
     return pa.DataFrameSchema(
         {
             "log_return": pa.Column(float, nullable=False),
-            "rsi": pa.Column(float, nullable=False, checks=[Check.ge(0), Check.le(1)]),
+            "rsi": pa.Column(float, nullable=False, checks=[pa.Check.ge(0), pa.Check.le(1)]),
             "macd_signal": pa.Column(float, nullable=False),
-            "bb_pct_b": pa.Column(float, nullable=False, checks=[Check.ge(0), Check.le(1)]),
+            "bb_pct_b": pa.Column(float, nullable=False, checks=[pa.Check.ge(0), pa.Check.le(1)]),
             "sma_ratio": pa.Column(float, nullable=False),
-            "vol_ratio": pa.Column(float, nullable=False, checks=[Check.ge(0), Check.le(10)]),
+            "vol_ratio": pa.Column(float, nullable=False, checks=[pa.Check.ge(0), pa.Check.le(10)]),
         },
         strict=True,
     )
@@ -107,4 +107,106 @@ def test_build_feature_matrix_preserves_record_count(synthetic_yfinance_df: pd.D
     max_warmup_rows = 30
     assert len(features) >= n_input - max_warmup_rows, (
         f"Esperado >= {n_input - max_warmup_rows} linhas, obtido {len(features)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gap 04 — testes explícitos com fixture de dados sintéticos
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sample_data() -> pd.DataFrame:
+    """Fixture com dados OHLCV sintéticos determinísticos para testes de data quality.
+
+    Gera 200 períodos horários com preços e volumes simulados usando seeds fixas,
+    sem dependência de arquivos externos ou APIs.
+
+    Returns:
+        DataFrame com colunas ``Open``, ``High``, ``Low``, ``Close``, ``Volume``
+        e índice DatetimeIndex UTC, adequado para alimentar ``build_feature_matrix``.
+    """
+    periods = 200
+    index = pd.date_range(
+        end=pd.Timestamp("2025-01-01 00:00:00", tz="UTC"),
+        periods=periods,
+        freq="h",
+    )
+    rng = np.random.default_rng(seed=42)
+    close = 50_000.0 + np.cumsum(rng.normal(0, 200, periods))
+    high = close + np.abs(rng.normal(100, 30, periods))
+    low = close - np.abs(rng.normal(100, 30, periods))
+    open_ = close + rng.normal(0, 50, periods)
+    volume = np.abs(rng.normal(300, 60, periods))
+
+    df = pd.DataFrame(
+        {
+            "Open": open_.astype(float),
+            "High": high.astype(float),
+            "Low": low.astype(float),
+            "Close": close.astype(float),
+            "Volume": volume.astype(float),
+        },
+        index=index,
+    )
+    df.index.name = "Datetime"
+    return df
+
+
+def test_schema_contract(sample_data: pd.DataFrame) -> None:
+    """Valida que a saída de build_feature_matrix respeita integralmente o schema pandera.
+
+    Garante que todas as colunas esperadas estejam presentes, com os tipos corretos
+    e dentro dos intervalos definidos no contrato de dados (schema estrito).
+
+    Args:
+        sample_data: Fixture com DataFrame OHLCV sintético determinístico.
+    """
+    result = build_feature_matrix(sample_data)
+    validated = _features_schema().validate(result)
+
+    assert list(validated.columns) == [
+        "log_return",
+        "rsi",
+        "macd_signal",
+        "bb_pct_b",
+        "sma_ratio",
+        "vol_ratio",
+    ], "As colunas do DataFrame de features devem corresponder ao contrato definido"
+    assert not validated.empty, "O DataFrame validado não deve ser vazio"
+
+
+def test_no_nulls(sample_data: pd.DataFrame) -> None:
+    """Assegura que o DataFrame resultante de build_feature_matrix não contém valores nulos.
+
+    Verifica que nenhuma célula do output é NaN após o processo de transformação,
+    incluindo as colunas com indicadores que dependem de janelas de aquecimento.
+
+    Args:
+        sample_data: Fixture com DataFrame OHLCV sintético determinístico.
+    """
+    result = build_feature_matrix(sample_data)
+
+    null_counts = result.isna().sum()
+    assert not result.isna().any().any(), (
+        f"Colunas com NaN: {null_counts[null_counts > 0].to_dict()}"
+    )
+
+
+def test_row_count_preserved(sample_data: pd.DataFrame) -> None:
+    """Confirma que o número de linhas do DataFrame de entrada é estritamente preservado.
+
+    Apenas a primeira linha é descartada pelo ``.diff()`` do ``log_return``; todos os
+    demais indicadores preenchem NaN internamente antes do ``dropna()`` final.
+    Portanto, ``len(output) == len(input) - 1`` é o comportamento esperado.
+
+    Args:
+        sample_data: Fixture com DataFrame OHLCV sintético determinístico.
+    """
+    n_input = len(sample_data)
+    result = build_feature_matrix(sample_data)
+
+    # Apenas 1 linha descartada: o NaN inicial de log_return = np.log(close).diff()
+    assert len(result) >= n_input - 1, (
+        f"Esperado >= {n_input - 1} linhas, obtido {len(result)}"
     )

@@ -357,6 +357,11 @@ class OutputGuardrail(_BedrockGuardrailBase):
         if not text:
             return text
 
+        # Sem Bedrock configurado, aplica sanitização local (Presidio/regex)
+        # para manter o guardrail de saída funcional em ambientes de desenvolvimento.
+        if not self.guardrail_identifier or not self.guardrail_version:
+            return self._anonymize_pii_with_presidio(text)
+
         try:
             response = self._apply_guardrail(
                 text,

@@ -73,6 +73,15 @@ ignore_errors = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov --cov-config=.coveragerc --cov-report=term-missing -q"
+filterwarnings = [
+  "ignore:'parseString' deprecated - use 'parse_string':pyparsing.exceptions.PyparsingDeprecationWarning",
+  "ignore:'resetCache' deprecated - use 'reset_cache':pyparsing.exceptions.PyparsingDeprecationWarning",
+  "ignore:'enablePackrat' deprecated - use 'enable_packrat':pyparsing.exceptions.PyparsingDeprecationWarning",
+  "ignore:The behavior of DataFrame concatenation with empty or all-NA entries is deprecated:FutureWarning",
+  "ignore:The 'app' shortcut is now deprecated:DeprecationWarning",
+  "ignore:The filesystem tracking backend.*is deprecated.*:FutureWarning",
+  "ignore:The filesystem model registry backend.*is deprecated.*:FutureWarning",
+]
 markers = [
   "mlflow_integration: optional integration test that spins up local MLflow container",
 ]

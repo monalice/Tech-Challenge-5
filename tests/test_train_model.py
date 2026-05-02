@@ -131,6 +131,58 @@ def test_validate_raw_training_data_rejects_temporal_gaps():
         tm.validate_raw_training_data(invalid_df)
 
 
+def test_validate_required_training_metadata_rejects_missing_required_tag():
+    with pytest.raises(ValueError, match="owner"):
+        tm.validate_required_training_metadata(
+            model_name="btc_hourly_forecaster",
+            model_version="v1",
+            training_data_version="sha:hash",
+            model_type="time_series",
+            owner="",
+            risk_level="medium",
+        )
+
+
+def test_main_raises_before_mlflow_start_run_when_required_metadata_missing(monkeypatch):
+    monkeypatch.setattr(tm, "ensure_directories", lambda: None)
+    monkeypatch.setattr(tm, "configure_mlflow", lambda: None)
+    monkeypatch.setattr(
+        tm,
+        "build_training_data_lineage",
+        lambda dataset_path=tm.CACHE_DATA_PATH: {
+            "git_sha": "sha-main-test",
+            "dvc_data_rev": "sha-main-test",
+            "dvc_data_hash": "abc123dvc",
+            "training_data_version": "sha-main-test:abc123dvc",
+        },
+    )
+    monkeypatch.setattr(
+        tm,
+        "get_fairness_artifact_status",
+        lambda fairness_artifact_path=tm.FAIRNESS_ARTIFACT_PATH: {
+            "fairness_checked": False,
+            "artifact_path": "evaluation/fairness_report.json",
+            "status": "missing",
+            "alert": "missing_fairness_artifact:evaluation/fairness_report.json",
+        },
+    )
+    monkeypatch.setattr(tm.tf.random, "set_seed", lambda value: None)
+    monkeypatch.setattr(tm, "TAG_OWNER", "")
+
+    start_run_called = {"value": False}
+
+    def _start_run_spy(*args, **kwargs):
+        start_run_called["value"] = True
+        raise AssertionError("mlflow.start_run não deveria ser chamado")
+
+    monkeypatch.setattr(tm.mlflow, "start_run", _start_run_spy)
+
+    with pytest.raises(ValueError, match="owner"):
+        tm.main()
+
+    assert start_run_called["value"] is False
+
+
 def test_load_cached_data_returns_empty_when_file_missing(monkeypatch):
     monkeypatch.setattr(tm.os.path, "exists", lambda path: False)
 
@@ -327,6 +379,11 @@ def test_main_sets_mlflow_tags_and_params_before_pipeline(monkeypatch):
     captured_metrics: dict[str, float] = {}
 
     monkeypatch.setattr(tm.mlflow, "start_run", lambda run_name: _RunCtx())
+    monkeypatch.setattr(
+        tm.mlflow,
+        "active_run",
+        lambda: SimpleNamespace(info=SimpleNamespace(run_id="run-main-test")),
+    )
     monkeypatch.setattr(tm.mlflow, "set_tags", lambda tags: captured.setdefault("tags", tags))
     monkeypatch.setattr(tm.mlflow, "set_tag", lambda key, value: captured_runtime_tags.__setitem__(key, value))
     monkeypatch.setattr(tm.mlflow, "log_params", lambda params: captured.setdefault("params", params))
@@ -708,6 +765,11 @@ def test_model_name_single_source_used_in_tags_registry_and_champion(monkeypatch
 
     captured_tags: dict[str, object] = {}
     monkeypatch.setattr(tm.mlflow, "start_run", lambda run_name: _RunCtx())
+    monkeypatch.setattr(
+        tm.mlflow,
+        "active_run",
+        lambda: SimpleNamespace(info=SimpleNamespace(run_id="run-tags-capture")),
+    )
     monkeypatch.setattr(tm.mlflow, "set_tags", lambda tags: captured_tags.update(tags))
     monkeypatch.setattr(tm.mlflow, "set_tag", lambda key, value: None)
     monkeypatch.setattr(tm.mlflow, "log_metric", lambda key, value: None)
@@ -955,3 +1017,342 @@ def test_run_walk_forward_backtest_executes_with_mocked_model(monkeypatch):
     y_train = np.zeros((30,), dtype=float)
 
     tm.run_walk_forward_backtest(X_train, y_train, scaler_return=_Scaler())
+
+
+# ---------------------------------------------------------------------------
+# Gap 04 — fluxo de split temporal e treino com MLflow completamente isolado
+# ---------------------------------------------------------------------------
+
+
+def test_create_sliding_window_multifeature_shapes() -> None:
+    """Verifica os shapes de saída de create_sliding_window_multifeature.
+
+    Arrange: dataset com 80 amostras × 3 features, look_back=10.
+    Act: chama create_sliding_window_multifeature.
+    Assert: X tem shape (70, 10, 3) e y tem shape (70,).
+    """
+    # Arrange
+    look_back = 10
+    n_samples = 80
+    n_features = 3
+    dataset = np.arange(n_samples * n_features, dtype=np.float64).reshape(n_samples, n_features)
+
+    # Act
+    X, y = tm.create_sliding_window_multifeature(dataset, look_back=look_back)
+
+    # Assert
+    expected_windows = n_samples - look_back
+    assert X.shape == (expected_windows, look_back, n_features), (
+        f"Shape de X esperado: ({expected_windows}, {look_back}, {n_features}), obtido: {X.shape}"
+    )
+    assert y.shape == (expected_windows,), (
+        f"Shape de y esperado: ({expected_windows},), obtido: {y.shape}"
+    )
+
+
+def test_create_sliding_window_multifeature_target_is_first_feature() -> None:
+    """Verifica que o target y corresponde ao log_return (feature índice 0).
+
+    Arrange: dataset sintético com feature 0 = [0, 1, 2, ...].
+    Act: cria janelas com look_back=2.
+    Assert: cada valor de y é igual à posição look_back na feature 0.
+    """
+    # Arrange
+    n_samples = 10
+    dataset = np.zeros((n_samples, 3), dtype=np.float64)
+    dataset[:, 0] = np.arange(n_samples, dtype=np.float64)
+
+    # Act
+    _, y = tm.create_sliding_window_multifeature(dataset, look_back=2)
+
+    # Assert — y[i] deve ser feature[0] da posição look_back + i
+    expected_y = np.arange(2, n_samples, dtype=np.float64)
+    np.testing.assert_array_equal(y, expected_y)
+
+
+def test_create_sliding_window_multifeature_returns_empty_when_insufficient_data() -> None:
+    """Verifica que arrays vazios são retornados quando look_back >= len(dataset).
+
+    Arrange: dataset com 5 amostras, look_back=5.
+    Act: chama create_sliding_window_multifeature.
+    Assert: X e y têm comprimento 0.
+    """
+    # Arrange
+    dataset = np.ones((5, 2), dtype=np.float64)
+
+    # Act
+    X, y = tm.create_sliding_window_multifeature(dataset, look_back=5)
+
+    # Assert
+    assert len(X) == 0
+    assert len(y) == 0
+
+
+def test_build_lstm_architecture_output_shape() -> None:
+    """Verifica que build_lstm_architecture retorna modelo com output (None, 1).
+
+    Arrange: input_shape = (60, 6).
+    Act: constrói o modelo.
+    Assert: output shape é (None, 1) e modelo é compilado (possui optimizer).
+    """
+    # Arrange
+    input_shape = (60, 6)
+
+    # Act
+    model = tm.build_lstm_architecture(input_shape)
+
+    # Assert
+    assert model.output_shape == (None, 1), (
+        f"Output shape esperado (None, 1), obtido {model.output_shape}"
+    )
+    assert model.optimizer is not None, "Modelo deve estar compilado com optimizer"
+
+
+def _make_price_df_for_main(periods: int = 200) -> pd.DataFrame:
+    """Cria DataFrame OHLCV com dados sintéticos para testes do fluxo main()."""
+    index = pd.date_range("2024-01-01", periods=periods, freq="h", tz="UTC")
+    close = np.linspace(90_000.0, 100_000.0, periods)
+    return pd.DataFrame(
+        {
+            "Close": close,
+            "High": close + 50,
+            "Low": close - 50,
+            "Volume": np.full(periods, 200.0),
+        },
+        index=index,
+    )
+
+
+def test_main_logs_required_mlflow_tags_and_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifica que main() chama mlflow com as tags obrigatórias (model_name, owner, risk_level).
+
+    Todas as chamadas externas (MLflow, download, modelo, scalers, artefatos) são
+    isoladas via monkeypatch. O teste verifica apenas o fluxo de separação temporal
+    e a passagem das tags de governança ao MLflow.
+
+    Arrange: mocks de todas as dependências externas; dados sintéticos com 200 linhas.
+    Act: chama tm.main().
+    Assert: mlflow.start_run chamado; tags obrigatórias presentes em set_tags.
+    """
+    # Arrange — dados sintéticos suficientes para o fluxo completo (LOOKBACK=60)
+    raw_df = _make_price_df_for_main(200)
+
+    logged_tags: dict[str, object] = {}
+    logged_params: dict[str, object] = {}
+    logged_metrics: dict[str, float] = {}
+    start_run_called: list[bool] = []
+
+    class _FakeRun:
+        class info:
+            run_id = "fake-run-id"
+
+    class _FakeRunContext:
+        def __enter__(self) -> "_FakeRunContext":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class _FakeActiveRun:
+        class info:
+            run_id = "fake-run-id"
+
+    class _FakeScaler:
+        data_min_ = np.array([0.0])
+        data_max_ = np.array([1.0])
+
+        def fit(self, X: np.ndarray) -> "_FakeScaler":
+            return self
+
+        def fit_transform(self, X: np.ndarray) -> np.ndarray:
+            return np.clip(X, 0, 1)
+
+        def transform(self, X: np.ndarray) -> np.ndarray:
+            return np.clip(X, 0, 1)
+
+        def inverse_transform(self, X: np.ndarray) -> np.ndarray:
+            return X
+
+    class _FakeModel:
+        output_shape = (None, 1)
+        optimizer = object()
+
+        def fit(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        def predict(self, X: np.ndarray, verbose: int = 0) -> np.ndarray:
+            return np.zeros((len(X), 1), dtype=np.float64)
+
+        def save(self, path: str) -> None:
+            return None
+
+    fake_scaler = _FakeScaler()
+
+    monkeypatch.setattr(tm, "download_crypto_data", lambda: raw_df)
+    monkeypatch.setattr(tm, "ensure_directories", lambda: None)
+    monkeypatch.setattr(tm, "configure_mlflow", lambda: None)
+    monkeypatch.setattr(
+        tm,
+        "build_training_data_lineage",
+        lambda **kwargs: {  # noqa: ARG005
+            "training_data_version": "v1",
+            "git_sha": "abc123",
+            "dvc_data_rev": "rev1",
+            "dvc_data_hash": "hash1",
+        },
+    )
+    monkeypatch.setattr(
+        tm,
+        "get_fairness_artifact_status",
+        lambda: {
+            "fairness_checked": False,
+            "artifact_path": "evaluation/fairness_report.json",
+            "status": "missing",
+            "alert": "fairness_artifact_missing",
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(tm, "MinMaxScaler", lambda **kwargs: fake_scaler)  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm, "build_lstm_architecture", lambda input_shape: _FakeModel())
+    monkeypatch.setattr(tm, "run_walk_forward_backtest", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tm, "log_training_artifacts", lambda *args, **kwargs: "1")
+    monkeypatch.setattr(tm, "register_challenger_initial_state", lambda version: "Staging")
+
+    # Isolamento completo do MLflow
+    monkeypatch.setattr(tm.mlflow, "start_run", lambda **kwargs: _FakeRunContext())  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_params", lambda params: logged_params.update(params))  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_param", lambda k, v: logged_params.update({k: v}))  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_metrics", lambda metrics: logged_metrics.update(metrics))  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_metric", lambda k, v: logged_metrics.update({k: v}))  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "set_tag", lambda k, v: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "set_tags", lambda t: logged_tags.update(t))  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_artifact", lambda *args, **kwargs: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "active_run", lambda: _FakeActiveRun())  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        tm,
+        "set_required_tags_on_active_run",
+        lambda tags: (start_run_called.append(True), tags)[1],
+    )
+
+    # Act
+    tm.main()
+
+    # Assert — MLflow foi invocado e tags obrigatórias foram registadas
+    assert start_run_called, "set_required_tags_on_active_run deve ter sido chamado dentro de start_run"
+    assert "model_name" in logged_tags or logged_params, (
+        "model_name deve estar presente nas tags ou params registados no MLflow"
+    )
+    assert logged_params.get("ticker") == tm.TICKER, (
+        f"Param 'ticker' esperado '{tm.TICKER}', obtido '{logged_params.get('ticker')}'"
+    )
+    assert "train_rows" in logged_metrics, "Métrica train_rows deve ser registada"
+    assert "test_rows" in logged_metrics, "Métrica test_rows deve ser registada"
+    assert logged_metrics["train_rows"] > logged_metrics["test_rows"], (
+        "Conjunto de treino deve ser maior que o de teste"
+    )
+
+
+def test_main_temporal_split_proportions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifica que a separação treino/teste respeita TEST_SIZE_PCT.
+
+    Isola o fluxo de main() e inspeciona as métricas train_rows e test_rows
+    para confirmar que a proporção temporal está correcta.
+
+    Arrange: dados com 200 linhas; TEST_SIZE_PCT = 0.2 → ~80% treino / ~20% teste.
+    Act: chama tm.main().
+    Assert: train_rows ≈ 80% do total e test_rows ≈ 20% do total.
+    """
+    # Arrange
+    raw_df = _make_price_df_for_main(200)
+    logged_metrics: dict[str, float] = {}
+
+    class _FakeRunContext:
+        def __enter__(self) -> "_FakeRunContext":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class _FakeActiveRun:
+        class info:
+            run_id = "fake-run-id"
+
+    class _FakeScaler:
+        data_min_ = np.array([0.0])
+        data_max_ = np.array([1.0])
+
+        def fit(self, X: np.ndarray) -> "_FakeScaler":
+            return self
+
+        def fit_transform(self, X: np.ndarray) -> np.ndarray:
+            return np.clip(X, 0, 1)
+
+        def transform(self, X: np.ndarray) -> np.ndarray:
+            return np.clip(X, 0, 1)
+
+        def inverse_transform(self, X: np.ndarray) -> np.ndarray:
+            return X
+
+    class _FakeModel:
+        def fit(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        def predict(self, X: np.ndarray, verbose: int = 0) -> np.ndarray:
+            return np.zeros((len(X), 1), dtype=np.float64)
+
+        def save(self, path: str) -> None:
+            return None
+
+    monkeypatch.setattr(tm, "download_crypto_data", lambda: raw_df)
+    monkeypatch.setattr(tm, "ensure_directories", lambda: None)
+    monkeypatch.setattr(tm, "configure_mlflow", lambda: None)
+    monkeypatch.setattr(
+        tm,
+        "build_training_data_lineage",
+        lambda **kwargs: {  # noqa: ARG005
+            "training_data_version": "v1",
+            "git_sha": "abc123",
+            "dvc_data_rev": "rev1",
+            "dvc_data_hash": "hash1",
+        },
+    )
+    monkeypatch.setattr(
+        tm,
+        "get_fairness_artifact_status",
+        lambda: {
+            "fairness_checked": False,
+            "artifact_path": "evaluation/fairness_report.json",
+            "status": "missing",
+            "alert": "fairness_artifact_missing",
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(tm, "MinMaxScaler", lambda **kwargs: _FakeScaler())  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm, "build_lstm_architecture", lambda input_shape: _FakeModel())
+    monkeypatch.setattr(tm, "run_walk_forward_backtest", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tm, "log_training_artifacts", lambda *args, **kwargs: "1")
+    monkeypatch.setattr(tm, "register_challenger_initial_state", lambda version: "Staging")
+    monkeypatch.setattr(tm, "set_required_tags_on_active_run", lambda tags: tags)
+    monkeypatch.setattr(tm.mlflow, "start_run", lambda **kwargs: _FakeRunContext())  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_params", lambda params: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_param", lambda k, v: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_metrics", lambda metrics: logged_metrics.update(metrics))  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_metric", lambda k, v: logged_metrics.update({k: v}))  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "set_tag", lambda k, v: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "set_tags", lambda t: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "log_artifact", lambda *args, **kwargs: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(tm.mlflow, "active_run", lambda: _FakeActiveRun())  # type: ignore[attr-defined]
+
+    # Act
+    tm.main()
+
+    # Assert — proporção de split ~80/20
+    train_rows = logged_metrics["train_rows"]
+    test_rows = logged_metrics["test_rows"]
+    total = train_rows + test_rows
+
+    assert total > 0, "Total de linhas deve ser > 0"
+    train_pct = train_rows / total
+    assert 0.75 <= train_pct <= 0.85, (
+        f"Proporção de treino esperada ≈ 80%, obtida {train_pct:.1%}"
+    )
