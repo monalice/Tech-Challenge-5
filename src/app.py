@@ -28,7 +28,7 @@ from prometheus_client import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
-from monitoring.drift_detection import detect_data_drift
+from src.domain.drift.detection import detect_data_drift
 from src.features.technical_features import (
     compute_bollinger_pct_b as _compute_bollinger_pct_b,  # noqa: F401
 )

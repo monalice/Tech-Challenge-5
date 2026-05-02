@@ -3,7 +3,7 @@ from collections import deque
 
 import pandas as pd
 
-from monitoring import drift_detection as dd
+from src.domain.drift import detection as dd
 
 
 def _prediction_log(periods: int = 20):
