@@ -16,7 +16,7 @@ import psutil
 # de DLL que causa crash (exit code -1073741819)
 import tensorflow as tf
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -29,9 +29,6 @@ from prometheus_client import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from monitoring.drift_detection import detect_data_drift
-from src.features.technical_features import (
-    build_feature_matrix as _build_feature_matrix,
-)
 from src.features.technical_features import (
     compute_bollinger_pct_b as _compute_bollinger_pct_b,  # noqa: F401
 )
@@ -57,8 +54,14 @@ from src.agent.llm_config import (
 from src.domain.constants import (
     LOOKBACK,
     SUPPORTED_TICKER,
-    Z_SCORE_95_CONFIDENCE,
 )
+from src.domain.inference import (
+    DataServiceError,
+    InferenceService,
+    InsufficientDataError,
+    estimate_uncertainty as _estimate_uncertainty_domain,
+)
+from src.domain.ports import LoadedArtifacts
 from src.infrastructure.market_data import BinanceSource, FallbackMarketData, YFinanceSource
 from src.domain.time_utils import (
     remove_incomplete_hour_candle,
@@ -229,7 +232,6 @@ class DriftCheckRequest(BaseModel):
 
 
 # --- Configuração geral ---
-ml_artifacts: dict[str, Any] = {}
 MODEL_PATH = "models/lstm_btc_hourly.keras"
 SCALER_PATH = "models/scaler_btc.gz"
 SCALER_RETURN_PATH = "models/scaler_btc_return.gz"
@@ -336,44 +338,22 @@ def get_cached_source(ticker: str) -> str:
 def estimate_uncertainty(
     predicted_price: float, metadata: dict[str, Any]
 ) -> tuple[float | None, ConfidenceIntervalResponse | None]:
-    """Estima o erro percentual e o intervalo de confiança de 95% para uma previsão.
+    """Wrapper para compatibilidade retroativa com testes existentes.
 
-    Usa MAPE ou RMSE extraídos dos metadados do modelo para calcular a margem de
-    erro. O intervalo de confiança é calculado como ``predicted_price ± 1.96 * rmse``.
+    Delega o cálculo para :func:`src.domain.inference.estimate_uncertainty` e
+    converte o tipo de retorno para :class:`ConfidenceIntervalResponse` (Pydantic).
 
     Args:
         predicted_price: Preço previsto pelo modelo em USD.
-        metadata: Dicionário de metadados do modelo com chave ``"metrics"`` contendo
-            opcionalmente ``"mape_price"`` e ``"rmse_price"``.
+        metadata: Dicionário de metadados do modelo com chave ``"metrics"``.
 
     Returns:
-        Tupla ``(estimated_error_pct, confidence_interval)``. O erro estimado é
-        ``None`` quando não há métricas disponíveis. O intervalo de confiança é
-        ``None`` quando não há RMSE nem MAPE suficiente para o cálculo.
+        Tupla ``(estimated_error_pct, confidence_interval_response)``.
     """
-    metrics = metadata.get("metrics", {}) if isinstance(metadata, dict) else {}
-
-    mape_price = metrics.get("mape_price")
-    rmse_price = metrics.get("rmse_price")
-
-    estimated_error_pct = None
-    if mape_price is not None:
-        estimated_error_pct = float(mape_price)
-    elif rmse_price is not None and predicted_price > 0:
-        estimated_error_pct = float((float(rmse_price) / predicted_price) * 100)
-
-    if rmse_price is not None:
-        margin = Z_SCORE_95_CONFIDENCE * float(rmse_price)
-    elif estimated_error_pct is not None:
-        margin = predicted_price * (estimated_error_pct / 100)
-    else:
-        return estimated_error_pct, None
-
-    ci = ConfidenceIntervalResponse(
-        low_usd=round(max(0.0, predicted_price - margin), 2),
-        high_usd=round(predicted_price + margin, 2),
-    )
-    return estimated_error_pct, ci
+    err_pct, ci = _estimate_uncertainty_domain(predicted_price, metadata)
+    if ci is None:
+        return err_pct, None
+    return err_pct, ConfidenceIntervalResponse(low_usd=ci.low_usd, high_usd=ci.high_usd)
 
 
 def load_trained_model(model_path: str) -> Any:
@@ -434,20 +414,35 @@ def download_with_retry(ticker: str) -> tuple[pd.DataFrame, str]:
     return df, source
 
 
+class _DownloadWithRetryPort:
+    """Adaptador que expõe :func:`download_with_retry` como :class:`~src.domain.ports.MarketDataPort`.
+
+    Usa late binding — resolve ``download_with_retry`` no namespace do módulo no
+    momento da chamada, garantindo que monkeypatches em testes sejam aplicados
+    corretamente.
+    """
+
+    def download(self, ticker: str) -> tuple[pd.DataFrame, str]:
+        return download_with_retry(ticker)
+
+
 # --- Health checks ---
-def perform_health_checks() -> dict[str, Any]:
+def perform_health_checks(artifacts: LoadedArtifacts | None) -> dict[str, Any]:
     """Executa todos os checks de saúde da API e retorna o resultado consolidado.
 
     Verifica: (1) disponibilidade dos artefatos ML, (2) capacidade de inferência
     do modelo, (3) acesso a dados de mercado, e (4) métricas de sistema (CPU/RAM).
     Atualiza os gauges Prometheus de CPU e memória como efeito colateral.
 
+    Args:
+        artifacts: Artefatos de ML carregados, ou ``None`` quando não disponíveis.
+
     Returns:
         Dicionário compatível com :class:`HealthResponse` contendo ``status``,
         flags de disponibilidade, timestamps do último candle e métricas de sistema.
     """
-    model: Any | None = ml_artifacts.get("model")
-    scaler = ml_artifacts.get("scaler")
+    model: Any | None = artifacts.model if artifacts else None
+    scaler = artifacts.scaler if artifacts else None
 
     artifacts_ready = model is not None and scaler is not None
     model_usable = False
@@ -459,7 +454,7 @@ def perform_health_checks() -> dict[str, Any]:
 
     if artifacts_ready:
         try:
-            metadata_check = ml_artifacts.get("metadata", {})
+            metadata_check = artifacts.metadata if artifacts else {}
             n_features = metadata_check.get("n_features", 1)
             sample_input = np.zeros((1, LOOKBACK, n_features), dtype=np.float32)
             if model is None:
@@ -515,31 +510,38 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     validate_bedrock_configuration_for_startup()
     logger.info("Carregando modelo LSTM Hourly e scaler...")
     try:
-        ml_artifacts["model"] = load_trained_model(MODEL_PATH)
-        ml_artifacts["scaler"] = joblib.load(SCALER_PATH)
+        _model = load_trained_model(MODEL_PATH)
+        _scaler = joblib.load(SCALER_PATH)
 
         # Scaler separado de log_return para inversão da predição (modelos multi-feature)
-        if os.path.exists(SCALER_RETURN_PATH):
-            ml_artifacts["scaler_return"] = joblib.load(SCALER_RETURN_PATH)
-        else:
-            ml_artifacts["scaler_return"] = None
+        _scaler_return = joblib.load(SCALER_RETURN_PATH) if os.path.exists(SCALER_RETURN_PATH) else None
 
         try:
             with open(MODEL_META_PATH, encoding="utf-8") as meta_file:
-                ml_artifacts["metadata"] = json.load(meta_file)
+                _metadata: dict[str, Any] = json.load(meta_file)
         except FileNotFoundError:
-            ml_artifacts["metadata"] = {
+            _metadata = {
                 "target": "log_return",
                 "lookback": LOOKBACK,
                 "ticker": SUPPORTED_TICKER,
             }
 
+        artifacts = LoadedArtifacts(
+            model=_model,
+            scaler=_scaler,
+            scaler_return=_scaler_return,
+            metadata=_metadata,
+        )
+        app.state.artifacts = artifacts
+        app.state.service = InferenceService(artifacts, _DownloadWithRetryPort())
         logger.info("Artefatos carregados com sucesso.")
     except Exception as e:
-        ml_artifacts.clear()
+        app.state.artifacts = None
+        app.state.service = None
         raise RuntimeError(f"Falha crítica ao carregar artefatos do modelo: {e}") from e
     yield
-    ml_artifacts.clear()
+    app.state.artifacts = None
+    app.state.service = None
     logger.info("Artefatos descarregados. API encerrada.")
 
 
@@ -553,15 +555,14 @@ app = FastAPI(title="Bitcoin Hourly Forecaster", version="3.0.0", lifespan=lifes
     summary="Liveness da API",
     description="Endpoint leve para healthcheck de container, sem consulta externa.",
 )
-def live_check() -> dict[str, Any]:
-    """Handler do endpoint de métricas Prometheus.
-
-    Atualiza gauges de CPU e memória antes de serializar as métricas.
+def live_check(request: Request) -> dict[str, Any]:
+    """Verifica se a API está respondendo e se os artefatos de ML estão carregados.
 
     Returns:
-        Resposta em texto plano no formato Prometheus/OpenMetrics.
+        Dicionário com ``status`` (``"alive"``) e ``artifacts_ready``.
     """
-    artifacts_ready = "model" in ml_artifacts and "scaler" in ml_artifacts
+    _artifacts: LoadedArtifacts | None = getattr(request.app.state, "artifacts", None)
+    artifacts_ready = _artifacts is not None
     return {"status": "alive", "artifacts_ready": artifacts_ready}
 
 
@@ -575,13 +576,14 @@ def live_check() -> dict[str, Any]:
         "Retorna timestamps em UTC e Brasília."
     ),
 )
-def health_check() -> dict[str, Any]:
-    """Handler do endpoint de histórico de previsões.
+def health_check(request: Request) -> dict[str, Any]:
+    """Executa todos os health checks e retorna o estado consolidado da API.
 
     Returns:
-        Dicionário com ``total_logged`` e ``predictions`` em ordem decrescente.
+        Dicionário compatível com :class:`HealthResponse`.
     """
-    return perform_health_checks()
+    _artifacts: LoadedArtifacts | None = getattr(request.app.state, "artifacts", None)
+    return perform_health_checks(_artifacts)
 
 
 @app.get(
@@ -671,6 +673,7 @@ async def check_drift(
     ),
 )
 def predict_next_hour(
+    http_request: Request,
     request: CryptoRequest = Body(  # noqa: B008
         default_factory=CryptoRequest,
         openapi_examples={
@@ -715,170 +718,86 @@ def predict_next_hour(
             status_code=400, detail=f"Este modelo foi treinado apenas para {SUPPORTED_TICKER}."
         )
 
-    if "model" not in ml_artifacts or "scaler" not in ml_artifacts:
+    service: InferenceService | None = getattr(http_request.app.state, "service", None)
+    if service is None:
         METRIC_PREDICT_REQUESTS.labels(ticker=ticker, status="error_no_model").inc()
         raise HTTPException(status_code=503, detail="Modelo não disponível.")
 
     try:
-        # 1. Coleta de dados de mercado com fallback automático
-        df, data_source = download_with_retry(ticker)
-
-        if "Close" not in df.columns:
-            raise HTTPException(status_code=503, detail="Dados de mercado sem coluna Close")
-
-        metadata = ml_artifacts.get("metadata", {})
-        n_features = metadata.get("n_features", 1)
-        scaler = ml_artifacts["scaler"]
-        scaler_return = ml_artifacts.get("scaler_return")
-        model = ml_artifacts["model"]
-
-        close_series = df["Close"].dropna()
-        if not request.use_partial_candle:
-            close_series = remove_incomplete_hour_candle(close_series)
-
-        required_points = LOOKBACK + 1
-        if len(close_series) < required_points:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Dados insuficientes para janela de retorno ({required_points} closes).",
-            )
-
-        if n_features > 1:
-            # Inferência multi-feature: reconstruir indicadores técnicos
-            if not {"High", "Low", "Volume"}.issubset(df.columns):
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        "Dados de mercado sem colunas OHLCV necessárias "
-                        "para inferência multi-feature."
-                    ),
-                )
-            ohlcv = df[["Close", "High", "Low", "Volume"]].dropna()
-            ohlcv = ohlcv.loc[close_series.index]
-
-            # Reuso do cálculo compartilhado de features técnicas.
-            features_df = _build_feature_matrix(ohlcv)
-
-            if len(features_df) < LOOKBACK:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Dados insuficientes para janela multi-feature de {LOOKBACK}h.",
-                )
-
-            window = features_df.to_numpy()[-LOOKBACK:]
-            scaled_input = scaler.transform(window)
-            X_input = scaled_input.reshape(1, LOOKBACK, n_features)
-
-            predicted_scaled = model.predict(X_input, verbose=0)
-            # Inverter apenas a coluna log_return (índice 0) usando scaler_return
-            if scaler_return is not None:
-                predicted_log_return = float(
-                    scaler_return.inverse_transform(predicted_scaled.reshape(-1, 1)).reshape(-1)[0]
-                )
-            else:
-                # Fallback: inverter via scaler_all usando feature 0 (log_return)
-                try:
-                    min_val = float(scaler.data_min_[0])
-                    max_val = float(scaler.data_max_[0])
-                    predicted_log_return = (
-                        float(predicted_scaled.reshape(-1)[0]) * (max_val - min_val) + min_val
-                    )
-                except (AttributeError, IndexError):
-                    predicted_log_return = float(predicted_scaled.reshape(-1)[0])
-
-            last_close = float(ohlcv["Close"].iloc[-1])
-            last_observed_ts = pd.Timestamp(features_df.index[-1])
-
-        else:
-            # Inferência single-feature (modelo legado com apenas log_return)
-            log_price_series = pd.Series(np.log(close_series.values), index=close_series.index)
-            return_series = log_price_series.diff().dropna()
-
-            if len(return_series) < LOOKBACK:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Dados insuficientes para gerar janela de retorno de {LOOKBACK}h.",
-                )
-
-            last_returns = np.asarray(
-                return_series.to_numpy()[-LOOKBACK:],
-                dtype=float,
-            ).reshape(-1, 1)
-            scaled_input = scaler.transform(last_returns)
-            X_input = scaled_input.reshape(1, LOOKBACK, 1)
-
-            predicted_scaled = model.predict(X_input, verbose=0)
-            predicted_log_return = float(scaler.inverse_transform(predicted_scaled).reshape(-1)[0])
-            last_close = float(close_series.iloc[-1])
-            last_observed_ts = pd.Timestamp(close_series.index[-1])
-
-        # 3. Conversão para preço e metadados temporais
-        forecast_for_ts = last_observed_ts + pd.Timedelta(hours=1)
-        forecast_close_ts = forecast_for_ts + pd.Timedelta(hours=1) - pd.Timedelta(seconds=1)
-        predicted_price = last_close * np.exp(predicted_log_return)
-
-        estimated_error_pct, confidence_interval_95 = estimate_uncertainty(
-            float(predicted_price),
-            metadata,
-        )
-
-        proc_time = (time.perf_counter() - start_proc) * 1000
-        METRIC_PREDICT_LATENCY.observe(proc_time / 1000)
-        METRIC_PREDICT_REQUESTS.labels(ticker=ticker, status="success").inc()
-
-        # 4. Log de predição para histórico/auditoria (MLOps)
-        prediction_log.append(
-            {
-                "requested_at_utc": pd.Timestamp.utcnow().isoformat(),
-                "ticker": ticker,
-                "input_mode": (
-                    "include_partial_candle"
-                    if request.use_partial_candle
-                    else "closed_candles_only"
-                ),
-                "last_input_candle_utc": timestamp_to_utc_iso(last_observed_ts),
-                "forecast_for_utc": timestamp_to_utc_iso(forecast_for_ts),
-                "predicted_price_usd": round(float(predicted_price), 2),
-                "data_source": data_source,
-                "processing_time_ms": round(proc_time, 2),
-            }
-        )
-        logger.info(
-            "Previsão gerada | ticker=%s source=%s price=%.2f latency=%.1fms",
-            ticker,
-            data_source,
-            float(predicted_price),
-            proc_time,
-        )
-
-        return {
-            "ticker": ticker,
-            "prediction_type": "Next Hour Close",
-            "input_mode": (
-                "include_partial_candle" if request.use_partial_candle else "closed_candles_only"
-            ),
-            "last_input_candle_utc": timestamp_to_utc_iso(last_observed_ts),
-            "last_input_candle_brt": timestamp_to_brt_iso(last_observed_ts),
-            "predicted_price_usd": round(float(predicted_price), 2),
-            "forecast_for_utc": timestamp_to_utc_iso(forecast_for_ts),
-            "forecast_for_brt": timestamp_to_brt_iso(forecast_for_ts),
-            "forecast_close_utc": timestamp_to_utc_iso(forecast_close_ts),
-            "forecast_close_brt": timestamp_to_brt_iso(forecast_close_ts),
-            "confidence_interval_95_usd": confidence_interval_95,
-            "estimated_error_pct": (
-                None if estimated_error_pct is None else round(float(estimated_error_pct), 2)
-            ),
-            "data_source": data_source,
-            "processing_time_ms": round(proc_time, 2),
-        }
-
+        result = service.predict(ticker, request.use_partial_candle)
+    except DataServiceError as exc:
+        METRIC_PREDICT_REQUESTS.labels(ticker=ticker, status="error").inc()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except InsufficientDataError as exc:
+        METRIC_PREDICT_REQUESTS.labels(ticker=ticker, status="error").inc()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
         METRIC_PREDICT_REQUESTS.labels(ticker=ticker, status="error").inc()
         raise
-    except Exception as e:
+    except Exception as exc:
         METRIC_PREDICT_REQUESTS.labels(ticker=ticker, status="error_internal").inc()
-        logger.error("Erro interno em /predict: %s: %s", type(e).__name__, e)
+        logger.error("Erro interno em /predict: %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=500, detail="Falha interna ao gerar previsão") from None
+
+    # --- Construção da resposta HTTP a partir do InferenceResult puro ---
+    forecast_for_ts = result.last_observed_ts + pd.Timedelta(hours=1)
+    forecast_close_ts = forecast_for_ts + pd.Timedelta(hours=1) - pd.Timedelta(seconds=1)
+    input_mode = (
+        "include_partial_candle" if request.use_partial_candle else "closed_candles_only"
+    )
+    confidence_interval_95: ConfidenceIntervalResponse | None = (
+        ConfidenceIntervalResponse(
+            low_usd=result.confidence_interval.low_usd,
+            high_usd=result.confidence_interval.high_usd,
+        )
+        if result.confidence_interval is not None
+        else None
+    )
+
+    proc_time = (time.perf_counter() - start_proc) * 1000
+    METRIC_PREDICT_LATENCY.observe(proc_time / 1000)
+    METRIC_PREDICT_REQUESTS.labels(ticker=ticker, status="success").inc()
+
+    prediction_log.append(
+        {
+            "requested_at_utc": pd.Timestamp.utcnow().isoformat(),
+            "ticker": ticker,
+            "input_mode": input_mode,
+            "last_input_candle_utc": timestamp_to_utc_iso(result.last_observed_ts),
+            "forecast_for_utc": timestamp_to_utc_iso(forecast_for_ts),
+            "predicted_price_usd": round(result.predicted_price_usd, 2),
+            "data_source": result.data_source,
+            "processing_time_ms": round(proc_time, 2),
+        }
+    )
+    logger.info(
+        "Previsão gerada | ticker=%s source=%s price=%.2f latency=%.1fms",
+        ticker,
+        result.data_source,
+        result.predicted_price_usd,
+        proc_time,
+    )
+
+    return {
+        "ticker": ticker,
+        "prediction_type": "Next Hour Close",
+        "input_mode": input_mode,
+        "last_input_candle_utc": timestamp_to_utc_iso(result.last_observed_ts),
+        "last_input_candle_brt": timestamp_to_brt_iso(result.last_observed_ts),
+        "predicted_price_usd": round(result.predicted_price_usd, 2),
+        "forecast_for_utc": timestamp_to_utc_iso(forecast_for_ts),
+        "forecast_for_brt": timestamp_to_brt_iso(forecast_for_ts),
+        "forecast_close_utc": timestamp_to_utc_iso(forecast_close_ts),
+        "forecast_close_brt": timestamp_to_brt_iso(forecast_close_ts),
+        "confidence_interval_95_usd": confidence_interval_95,
+        "estimated_error_pct": (
+            None
+            if result.estimated_error_pct is None
+            else round(float(result.estimated_error_pct), 2)
+        ),
+        "data_source": result.data_source,
+        "processing_time_ms": round(proc_time, 2),
+    }
 
 
 @app.post(
@@ -892,7 +811,7 @@ def predict_next_hour(
         "(contexto de mercado simulado). Requer acesso AWS com permissões para Amazon Bedrock."
     ),
 )
-def chat(request: ChatRequest) -> dict[str, Any]:
+def chat(http_request: Request, request: ChatRequest) -> dict[str, Any]:
     """Handler do endpoint de chat com o Agente ReAct LangChain.
 
     Aplica guardrails de entrada antes de delegar ao agente e guardrails de saída
@@ -924,7 +843,8 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         from src.agent.react_agent import build_agent  # noqa: PLC0415
 
         try:
-            agent_executor = build_agent(ml_artifacts)
+            _artifacts: LoadedArtifacts | None = getattr(http_request.app.state, "artifacts", None)
+            agent_executor = build_agent(_artifacts.to_dict() if _artifacts else {})
         except OSError as exc:
             is_error = True
             raise HTTPException(status_code=503, detail=str(exc)) from exc
