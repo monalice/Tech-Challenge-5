@@ -80,14 +80,36 @@ SIMULATED_CRYPTO_NEWS: list[dict[str, str]] = [
 def build_google_embeddings(
     model: str = DEFAULT_EMBEDDING_MODEL,
 ) -> GoogleGenerativeAIEmbeddings:
-    """Create the Google embedding client used by the RAG pipeline."""
+    """Cria o cliente de embeddings Google usado pelo pipeline RAG.
+
+    Args:
+        model: Identificador do modelo de embeddings Google (ex:
+            ``"models/text-embedding-004"``). Pode ser sobrescrito pela variável
+            de ambiente ``RAG_EMBEDDING_MODEL``.
+
+    Returns:
+        Instância de :class:`GoogleGenerativeAIEmbeddings` pronta para uso.
+    """
     return GoogleGenerativeAIEmbeddings(model=model)
 
 
 def build_documents(
     texts: Sequence[str], metadatas: Sequence[dict[str, Any]] | None = None
 ) -> list[Document]:
-    """Convert raw texts and optional metadata into LangChain documents."""
+    """Converte textos brutos e metadados opcionais em documentos LangChain.
+
+    Args:
+        texts: Sequência de strings com o conteúdo de cada documento.
+        metadatas: Sequência de dicionários de metadados paralela a *texts*.
+            Deve ter o mesmo tamanho que *texts* quando fornecida.
+
+    Returns:
+        Lista de :class:`~langchain_core.documents.Document` com o conteúdo
+        e metadados correspondentes.
+
+    Raises:
+        ValueError: Se *metadatas* for fornecida com tamanho diferente de *texts*.
+    """
     if metadatas and len(texts) != len(metadatas):
         raise ValueError("texts e metadatas devem ter o mesmo tamanho.")
 
@@ -127,7 +149,22 @@ def build_vector_store(
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     persist_directory: str | Path | None = None,
 ) -> Any:
-    """Build a Chroma or FAISS vector store using Google embeddings."""
+    """Constrói um vector store Chroma ou FAISS usando embeddings Google.
+
+    Args:
+        documents: Sequência de documentos LangChain a indexar.
+        backend: Backend de vector store a usar: ``"chroma"`` (padrão) ou ``"faiss"``.
+        embedding_model: Identificador do modelo de embeddings Google.
+        persist_directory: Diretório para persistência em disco (apenas Chroma).
+            Ignorado quando *backend* é ``"faiss"``.
+
+    Returns:
+        Instância do vector store criada e populada com os documentos fornecidos.
+
+    Raises:
+        ImportError: Se o backend solicitado não estiver disponível no ambiente.
+        ValueError: Se *backend* não for ``"chroma"`` nem ``"faiss"``.
+    """
     embeddings = build_google_embeddings(model=embedding_model)
     docs = list(documents)
 
@@ -153,7 +190,20 @@ def build_vector_store_from_texts(
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     persist_directory: str | Path | None = None,
 ) -> Any:
-    """Convenience helper to build a vector store directly from text chunks."""
+    """Constrói um vector store diretamente a partir de strings e metadados.
+
+    Atalho que combina :func:`build_documents` e :func:`build_vector_store`.
+
+    Args:
+        texts: Sequência de strings com o conteúdo de cada documento.
+        metadatas: Metadados opcionais paralelos a *texts*.
+        backend: Backend de vector store: ``"chroma"`` (padrão) ou ``"faiss"``.
+        embedding_model: Identificador do modelo de embeddings Google.
+        persist_directory: Diretório de persistência (apenas Chroma).
+
+    Returns:
+        Instância do vector store construída e populada.
+    """
     documents = build_documents(texts=texts, metadatas=metadatas)
     return build_vector_store(
         documents,
@@ -169,12 +219,30 @@ def similarity_search(
     *,
     k: int = 4,
 ) -> list[Document]:
-    """Run a similarity search using the configured vector store."""
+    """Executa uma busca por similaridade semântica no vector store.
+
+    Args:
+        vector_store: Instância de vector store (Chroma ou FAISS) já populada.
+        query: Texto da consulta em linguagem natural.
+        k: Número de documentos mais similares a retornar (padrão: 4).
+
+    Returns:
+        Lista de até *k* documentos :class:`~langchain_core.documents.Document`
+        ordenados por similaridade decrescente.
+    """
     return list(vector_store.similarity_search(query, k=k))
 
 
 def build_simulated_news_documents() -> list[Document]:
-    """Build LangChain documents for the simulated crypto-news corpus."""
+    """Constrói documentos LangChain para o corpus simulado de notícias cripto.
+
+    Usa os dados estáticos de :data:`SIMULATED_CRYPTO_NEWS` como fonte de conteúdo,
+    preservando título, tópico e data de publicação como metadados.
+
+    Returns:
+        Lista de :class:`~langchain_core.documents.Document` com conteúdo e metadados
+        extraídos de :data:`SIMULATED_CRYPTO_NEWS`.
+    """
     return build_documents(
         texts=[item["content"] for item in SIMULATED_CRYPTO_NEWS],
         metadatas=[
@@ -194,7 +262,21 @@ def get_crypto_news_vector_store(
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     persist_directory: str | None = None,
 ) -> Any:
-    """Create and cache the local vector store used by the agent RAG tool."""
+    """Cria e cacheia o vector store local usado pela ferramenta RAG do agente.
+
+    Utiliza :func:`functools.lru_cache` para evitar reconstruções desnecessárias
+    entre chamadas. O corpus é gerado por :func:`build_simulated_news_documents`.
+
+    Args:
+        backend: Backend de vector store: ``"chroma"`` (padrão) ou ``"faiss"``.
+        embedding_model: Identificador do modelo de embeddings Google.
+        persist_directory: Diretório de persistência customizado (apenas Chroma).
+            Se ``None``, usa :data:`DEFAULT_CHROMA_DIR`.
+
+    Returns:
+        Instância de vector store populada com notícias cripto simuladas, cacheada
+        por combinação de ``(backend, embedding_model, persist_directory)``.
+    """
     documents = build_simulated_news_documents()
     resolved_directory = persist_directory or str(DEFAULT_CHROMA_DIR)
     return build_vector_store(

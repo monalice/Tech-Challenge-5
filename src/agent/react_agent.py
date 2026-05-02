@@ -9,7 +9,7 @@ Uso:
     from src.agent.react_agent import build_agent
     executor = build_agent(ml_artifacts)
     result   = executor.invoke({"input": "Qual a previsão do BTC para a próxima hora?"})
-    print(result["output"])
+    logger.info(result["output"])
 """
 
 from __future__ import annotations
@@ -100,19 +100,43 @@ def _get_env_optional_int(primary_key: str, fallback_key: str | None = None) -> 
 
 
 def _resolve_agent_temperature() -> float:
+    """Resolve a temperatura do LLM a partir das variáveis de ambiente.
+
+    Returns:
+        Temperatura como float; padrão ``0.0`` quando não configurada.
+    """
     value = _get_env_optional_float("AGENT_LLM_TEMPERATURE", "GEMINI_TEMPERATURE")
     return value if value is not None else 0.0
 
 
 def _resolve_agent_top_p() -> float | None:
+    """Resolve o parâmetro top-p do LLM a partir das variáveis de ambiente.
+
+    Returns:
+        Valor de top-p como float, ou ``None`` quando não configurado.
+    """
     return _get_env_optional_float("AGENT_LLM_TOP_P", "GEMINI_TOP_P")
 
 
 def _resolve_agent_top_k() -> int | None:
+    """Resolve o parâmetro top-k do LLM a partir das variáveis de ambiente.
+
+    Returns:
+        Valor de top-k como int, ou ``None`` quando não configurado.
+    """
     return _get_env_optional_int("AGENT_LLM_TOP_K", "GEMINI_TOP_K")
 
 
 def _resolve_bedrock_region() -> str | None:
+    """Resolve a região AWS para Amazon Bedrock a partir das variáveis de ambiente.
+
+    Verifica, em ordem de prioridade: ``BEDROCK_AWS_REGION``, ``AWS_REGION`` e
+    ``AWS_DEFAULT_REGION``.
+
+    Returns:
+        String com a região AWS (ex: ``"us-east-1"``), ou ``None`` quando nenhuma
+        variável estiver definida.
+    """
     return (
         os.getenv("BEDROCK_AWS_REGION")
         or os.getenv("AWS_REGION")
@@ -146,12 +170,28 @@ def _remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
 
 
 def _ts_to_utc_iso(ts: pd.Timestamp) -> str:
+    """Converte um timestamp para string ISO-8601 em UTC.
+
+    Args:
+        ts: Timestamp pandas, tz-aware ou naive (assumido UTC se naive).
+
+    Returns:
+        String ISO-8601 com offset UTC (ex: ``"2026-04-18T14:00:00+00:00"``).
+    """
     ts = pd.Timestamp(ts)
     ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
     return str(ts_utc.isoformat())
 
 
 def _ts_to_brt_iso(ts: pd.Timestamp) -> str:
+    """Converte um timestamp para string ISO-8601 no horário de Brasília.
+
+    Args:
+        ts: Timestamp pandas, tz-aware ou naive (assumido UTC se naive).
+
+    Returns:
+        String ISO-8601 com offset de Brasília (ex: ``"2026-04-18T11:00:00-03:00"``).
+    """
     ts = pd.Timestamp(ts)
     ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
     return str(ts_utc.tz_convert(ZoneInfo(BRASILIA_TZ)).isoformat())
@@ -163,6 +203,17 @@ def _ts_to_brt_iso(ts: pd.Timestamp) -> str:
 
 
 def _fetch_yfinance(ticker: str) -> pd.DataFrame:
+    """Baixa dados horários do Yahoo Finance para o último mês.
+
+    Args:
+        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
+
+    Returns:
+        DataFrame com colunas de preços (incluindo ``Close``) indexado por DatetimeIndex.
+
+    Raises:
+        ValueError: Se a resposta do Yahoo Finance estiver vazia.
+    """
     df = yf.download(
         ticker, period="1mo", interval="1h", progress=False, timeout=YFINANCE_TIMEOUT_SECONDS
     )
@@ -181,6 +232,19 @@ def _fetch_yfinance(ticker: str) -> pd.DataFrame:
 
 
 def _fetch_binance(limit: int = 200) -> pd.DataFrame:
+    """Baixa candles horários do BTCUSDT via Binance REST API pública.
+
+    Args:
+        limit: Número de candles a retornar.
+
+    Returns:
+        DataFrame com índice DatetimeIndex UTC e colunas ``Close``, ``High``,
+        ``Low``, ``Volume``.
+
+    Raises:
+        ValueError: Se a resposta da Binance estiver vazia.
+        requests.HTTPError: Se a requisição HTTP falhar.
+    """
     resp = requests.get(
         BINANCE_API_URL,
         params={"symbol": BINANCE_SYMBOL, "interval": "1h", "limit": limit},
@@ -467,7 +531,15 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
 
 
 def _remove_incomplete_hour_candle_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove a última linha do DataFrame se ela corresponder ao candle horário em formação."""
+    """Remove a última linha do DataFrame se ela corresponder ao candle em formação.
+
+    Args:
+        df: DataFrame com índice DatetimeIndex. Deve ter pelo menos 2 linhas.
+
+    Returns:
+        DataFrame sem a última linha quando ela representa a hora corrente em
+        formação; caso contrário, o DataFrame original sem modificação.
+    """
     if len(df) < 2:
         return df
     last_ts = pd.Timestamp(df.index[-1])
@@ -481,7 +553,13 @@ def _remove_incomplete_hour_candle_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 class _GuardedAgentExecutor:
-    """Wrapper para aplicar guardrails de entrada/saída no AgentExecutor."""
+    """Wrapper que aplica guardrails de entrada e saída em torno de um AgentExecutor.
+
+    Intercepta a chamada a :meth:`invoke`, valida o prompt de entrada com
+    :class:`~src.security.guardrails.InputGuardrail` e sanitiza a resposta com
+    :class:`~src.security.guardrails.OutputGuardrail`. Delega todos os outros
+    atributos ao executor base via ``__getattr__``.
+    """
 
     def __init__(
         self,
@@ -489,14 +567,47 @@ class _GuardedAgentExecutor:
         input_guardrail: InputGuardrail,
         output_guardrail: OutputGuardrail,
     ) -> None:
+        """Inicializa o wrapper com o executor base e os guardrails.
+
+        Args:
+            base_executor: AgentExecutor LangChain a ser protegido.
+            input_guardrail: Instância de guardrail para validação de entrada.
+            output_guardrail: Instância de guardrail para sanitização de saída.
+        """
         self._base_executor = base_executor
         self._input_guardrail = input_guardrail
         self._output_guardrail = output_guardrail
 
     def __getattr__(self, name: str) -> Any:
+        """Delega atributos desconhecidos ao executor base.
+
+        Args:
+            name: Nome do atributo solicitado.
+
+        Returns:
+            Atributo correspondente no executor base.
+        """
         return getattr(self._base_executor, name)
 
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> dict[str, Any]:
+        """Invoca o agente com guardrails de entrada e saída aplicados.
+
+        Bloqueia entradas que contenham prompt injection ou context stuffing e
+        sanitiza a saída antes de devolvê-la ao chamador.
+
+        Args:
+            input: Dicionário com chave ``"input"`` contendo o prompt do usuário.
+            config: Configuração opcional repassada ao executor base.
+            **kwargs: Argumentos adicionais repassados ao executor base.
+
+        Returns:
+            Dicionário com ``"output"`` (string sanitizada), ``"intermediate_steps"``
+            e ``"guardrails"`` com metadados de validação. Quando a entrada é
+            bloqueada, retorna imediatamente sem chamar o executor base.
+
+        Raises:
+            ValueError: Se *input* não for um dicionário.
+        """
         if not isinstance(input, dict):
             raise ValueError("Entrada do agente deve ser um dicionário com a chave 'input'.")
 

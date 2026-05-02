@@ -2,11 +2,9 @@ import collections
 import json
 import logging
 import os
-import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -55,6 +53,11 @@ from src.features.technical_features import (
 )
 from src.security.guardrails import InputGuardrail, OutputGuardrail
 from src.serving.drift_automation import DriftAutomationConfig, process_drift_result
+from src.agent.llm_config import (
+    is_production_environment,
+    publish_cloudwatch_llm_metrics,
+    validate_bedrock_configuration_for_startup,
+)
 
 # --- Logging estruturado ---
 logging.basicConfig(
@@ -66,30 +69,6 @@ logger = logging.getLogger("stockcast")
 
 input_guardrail = InputGuardrail()
 output_guardrail = OutputGuardrail()
-
-PRODUCTION_ENV_NAMES = {"prod", "production"}
-PRODUCTION_ENV_VARIABLES = (
-    "APP_ENV",
-    "ENVIRONMENT",
-    "ENV",
-    "STAGE",
-    "DEPLOY_ENV",
-)
-BEDROCK_REGION_PATTERN = re.compile(r"^[a-z]{2}(?:-gov)?-[a-z]+-\d$")
-INSECURE_BEDROCK_CONFIG_VALUES = {
-    "",
-    "your-aws-region",
-    "your-bedrock-region",
-    "changeme",
-    "replace-me",
-    "your_region_here",
-    "test",
-    "dummy",
-    "none",
-    "null",
-}
-DEFAULT_CLOUDWATCH_NAMESPACE = "StockCast/LLM"
-CLOUDWATCH_METRIC_DIMENSIONS = ["Service", "Environment", "Endpoint"]
 
 
 # --- Schemas ---
@@ -299,66 +278,21 @@ METRIC_MEMORY = Gauge(
 )
 
 
-def _is_true(value: str | None, default: bool = True) -> bool:
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _resolve_cloudwatch_region() -> str | None:
-    for env_name in ("BEDROCK_AWS_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"):
-        candidate = os.getenv(env_name)
-        if candidate and candidate.strip():
-            return candidate.strip()
-    return None
-
-
-def _publish_cloudwatch_llm_metrics(*, latency_ms: float, is_error: bool) -> None:
-    if not _is_true(os.getenv("CW_LLM_METRICS_ENABLED"), default=True):
-        return
-
-    try:
-        import boto3  # type: ignore[import-untyped]
-    except Exception as exc:
-        logger.warning("boto3 indisponível para métricas CloudWatch: %s", exc)
-        return
-
-    region_name = _resolve_cloudwatch_region()
-    namespace = os.getenv("CW_LLM_METRICS_NAMESPACE", DEFAULT_CLOUDWATCH_NAMESPACE)
-    service_name = os.getenv("CW_METRIC_SERVICE_NAME", "stockcast")
-    environment_name = os.getenv("CW_METRIC_ENVIRONMENT", os.getenv("APP_ENV", "unknown"))
-    dimensions = [
-        {"Name": "Service", "Value": service_name},
-        {"Name": "Environment", "Value": environment_name},
-        {"Name": "Endpoint", "Value": "/chat"},
-    ]
-
-    metric_data: list[dict[str, Any]] = [
-        {
-            "MetricName": "llm_latency",
-            "Dimensions": dimensions,
-            "Timestamp": datetime.now(timezone.utc),
-            "Value": float(latency_ms),
-            "Unit": "Milliseconds",
-        },
-        {
-            "MetricName": "llm_error_rate",
-            "Dimensions": dimensions,
-            "Timestamp": datetime.now(timezone.utc),
-            "Value": 100.0 if is_error else 0.0,
-            "Unit": "Percent",
-        },
-    ]
-
-    try:
-        cloudwatch = boto3.client("cloudwatch", region_name=region_name)
-        cloudwatch.put_metric_data(Namespace=namespace, MetricData=metric_data)
-    except Exception as exc:
-        logger.error("Falha ao publicar métricas LLM no CloudWatch: %s", exc)
-
-
 # --- Utilitários ---
 def remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
+    """Remove o candle horário parcial (em formação) de uma série temporal.
+
+    Compara o último timestamp da série com a hora UTC atual truncada em horas.
+    Se o último candle corresponder à hora corrente (ainda não fechada), ele é
+    descartado para evitar ruído na inferência do modelo.
+
+    Args:
+        series: Série temporal de preços indexada por timestamps (tz-aware ou naive).
+
+    Returns:
+        Série sem o último elemento se ele corresponder à hora em formação;
+        caso contrário, a série original sem modificação.
+    """
     if len(series) < 2:
         return series
 
@@ -376,6 +310,14 @@ def remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
 
 
 def get_cached_market_data(ticker: str) -> pd.DataFrame | None:
+    """Recupera dados de mercado do cache em memória se ainda estiverem válidos.
+
+    Args:
+        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
+
+    Returns:
+        Cópia do DataFrame cacheado quando o TTL não expirou; ``None`` caso contrário.
+    """
     cache_entry = market_cache.get(ticker)
     if not cache_entry:
         return None
@@ -388,10 +330,26 @@ def get_cached_market_data(ticker: str) -> pd.DataFrame | None:
 
 
 def set_cached_market_data(ticker: str, data: pd.DataFrame, source: str) -> None:
+    """Armazena dados de mercado no cache em memória com timestamp de inserção.
+
+    Args:
+        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
+        data: DataFrame com colunas de OHLCV a ser cacheado.
+        source: Identificador da fonte dos dados (ex: ``"yfinance"`` ou ``"binance"``).
+    """
     market_cache[ticker] = {"cached_at": time.time(), "data": data.copy(), "source": source}
 
 
 def get_cached_source(ticker: str) -> str:
+    """Retorna a fonte de dados registrada no cache para o ticker informado.
+
+    Args:
+        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
+
+    Returns:
+        Nome da fonte (ex: ``"yfinance"``, ``"binance"``), ou ``"unknown"`` quando
+        o ticker não está no cache.
+    """
     entry = market_cache.get(ticker)
     if not entry:
         return "unknown"
@@ -399,12 +357,28 @@ def get_cached_source(ticker: str) -> str:
 
 
 def timestamp_to_utc_iso(ts: pd.Timestamp) -> str:
+    """Converte um timestamp para string ISO-8601 em UTC.
+
+    Args:
+        ts: Timestamp pandas, tz-aware ou naive (assumido UTC se naive).
+
+    Returns:
+        String ISO-8601 com offset UTC (ex: ``"2026-04-18T14:00:00+00:00"``).
+    """
     ts = pd.Timestamp(ts)
     ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
     return str(ts_utc.isoformat())
 
 
 def timestamp_to_brt_iso(ts: pd.Timestamp) -> str:
+    """Converte um timestamp para string ISO-8601 no horário de Brasília (BRT/BRST).
+
+    Args:
+        ts: Timestamp pandas, tz-aware ou naive (assumido UTC se naive).
+
+    Returns:
+        String ISO-8601 com offset de Brasília (ex: ``"2026-04-18T11:00:00-03:00"``).
+    """
     ts = pd.Timestamp(ts)
     ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
     return str(ts_utc.tz_convert(ZoneInfo(BRASILIA_TZ)).isoformat())
@@ -413,6 +387,21 @@ def timestamp_to_brt_iso(ts: pd.Timestamp) -> str:
 def estimate_uncertainty(
     predicted_price: float, metadata: dict[str, Any]
 ) -> tuple[float | None, ConfidenceIntervalResponse | None]:
+    """Estima o erro percentual e o intervalo de confiança de 95% para uma previsão.
+
+    Usa MAPE ou RMSE extraídos dos metadados do modelo para calcular a margem de
+    erro. O intervalo de confiança é calculado como ``predicted_price ± 1.96 * rmse``.
+
+    Args:
+        predicted_price: Preço previsto pelo modelo em USD.
+        metadata: Dicionário de metadados do modelo com chave ``"metrics"`` contendo
+            opcionalmente ``"mape_price"`` e ``"rmse_price"``.
+
+    Returns:
+        Tupla ``(estimated_error_pct, confidence_interval)``. O erro estimado é
+        ``None`` quando não há métricas disponíveis. O intervalo de confiança é
+        ``None`` quando não há RMSE nem MAPE suficiente para o cálculo.
+    """
     metrics = metadata.get("metrics", {}) if isinstance(metadata, dict) else {}
 
     mape_price = metrics.get("mape_price")
@@ -438,45 +427,18 @@ def estimate_uncertainty(
     return estimated_error_pct, ci
 
 
-def is_production_environment() -> bool:
-    for env_var in PRODUCTION_ENV_VARIABLES:
-        value = os.getenv(env_var)
-        if value and value.strip().lower() in PRODUCTION_ENV_NAMES:
-            return True
-    return False
-
-
-def validate_bedrock_configuration_for_startup() -> None:
-    if not is_production_environment():
-        return
-
-    aws_region = (
-        os.getenv("BEDROCK_AWS_REGION")
-        or os.getenv("AWS_REGION")
-        or os.getenv("AWS_DEFAULT_REGION")
-        or ""
-    ).strip()
-    if aws_region.lower() in INSECURE_BEDROCK_CONFIG_VALUES:
-        raise RuntimeError(
-            "Região AWS do Amazon Bedrock inválida para produção. Configure uma região real e segura."
-        )
-
-    if not BEDROCK_REGION_PATTERN.fullmatch(aws_region):
-        raise RuntimeError(
-            "Região AWS do Amazon Bedrock com formato inválido para produção. "
-            "Use uma região válida antes de iniciar a API."
-        )
-
-    guardrail_identifier = (os.getenv("BEDROCK_GUARDRAIL_ID") or "").strip()
-    guardrail_version = (os.getenv("BEDROCK_GUARDRAIL_VERSION") or "").strip()
-    if not guardrail_identifier or not guardrail_version:
-        raise RuntimeError(
-            "Amazon Bedrock Guardrails deve ser configurado em produção. "
-            "Defina BEDROCK_GUARDRAIL_ID e BEDROCK_GUARDRAIL_VERSION."
-        )
-
-
 def load_trained_model(model_path: str) -> Any:
+    """Carrega um modelo Keras/TensorFlow a partir do caminho especificado.
+
+    Args:
+        model_path: Caminho relativo ou absoluto para o arquivo ``.keras`` ou ``SavedModel``.
+
+    Returns:
+        Objeto de modelo Keras pronto para inferência.
+
+    Raises:
+        RuntimeError: Se TensorFlow/Keras não estiver disponível no ambiente.
+    """
     keras_module = getattr(tf, "keras", None)
     if keras_module is None or not hasattr(keras_module, "models"):
         raise RuntimeError("TensorFlow/Keras indisponível para carregar o modelo")
@@ -485,7 +447,17 @@ def load_trained_model(model_path: str) -> Any:
 
 # --- Fontes de dados ---
 def _download_from_yfinance(ticker: str) -> pd.DataFrame:
-    """Baixa dados do Yahoo Finance. Lança exceção em caso de falha."""
+    """Baixa dados horários do Yahoo Finance para o ticker informado.
+
+    Args:
+        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
+
+    Returns:
+        DataFrame com colunas de preços (incluindo ``Close``) indexado por DatetimeIndex.
+
+    Raises:
+        ValueError: Se a resposta do Yahoo Finance estiver vazia.
+    """
     df = yf.download(
         ticker, period="1mo", interval="1h", progress=False, timeout=YFINANCE_TIMEOUT_SECONDS
     )
@@ -506,7 +478,16 @@ def _download_from_yfinance(ticker: str) -> pd.DataFrame:
 
 def _download_from_binance(limit: int = 200) -> pd.DataFrame:
     """Baixa candles horários do BTCUSDT via Binance REST API pública (sem autenticação).
-    Retorna DataFrame com índice DatetimeIndex UTC e colunas Close, High, Low, Volume.
+
+    Args:
+        limit: Número de candles a retornar (máximo 1000 pela API da Binance).
+
+    Returns:
+        DataFrame com índice DatetimeIndex UTC e colunas ``Close``, ``High``, ``Low``, ``Volume``.
+
+    Raises:
+        ValueError: Se a resposta da Binance estiver vazia.
+        requests.HTTPError: Se a requisição HTTP falhar.
     """
     resp = requests.get(
         BINANCE_API_URL,
@@ -534,7 +515,21 @@ def _download_from_binance(limit: int = 200) -> pd.DataFrame:
 
 
 def download_with_retry(ticker: str) -> tuple[pd.DataFrame, str]:
-    """Retorna (DataFrame, source) com fallback automático para a Binance."""
+    """Baixa dados de mercado com retry no Yahoo Finance e fallback para Binance.
+
+    Verifica o cache em memória antes de realizar qualquer requisição de rede.
+    Tenta o Yahoo Finance até :data:`YFINANCE_MAX_RETRIES` vezes com back-off
+    exponencial simples; em caso de falha persistente, tenta a Binance.
+
+    Args:
+        ticker: Símbolo do ativo (ex: ``"BTC-USD"``).
+
+    Returns:
+        Tupla ``(DataFrame, source)`` onde *source* é ``"yfinance"`` ou ``"binance"``.
+
+    Raises:
+        fastapi.HTTPException: HTTP 503 quando todas as fontes de dados falham.
+    """
     cached = get_cached_market_data(ticker)
     if cached is not None:
         return cached, get_cached_source(ticker)
@@ -583,6 +578,16 @@ def download_with_retry(ticker: str) -> tuple[pd.DataFrame, str]:
 
 # --- Health checks ---
 def perform_health_checks() -> dict[str, Any]:
+    """Executa todos os checks de saúde da API e retorna o resultado consolidado.
+
+    Verifica: (1) disponibilidade dos artefatos ML, (2) capacidade de inferência
+    do modelo, (3) acesso a dados de mercado, e (4) métricas de sistema (CPU/RAM).
+    Atualiza os gauges Prometheus de CPU e memória como efeito colateral.
+
+    Returns:
+        Dicionário compatível com :class:`HealthResponse` contendo ``status``,
+        flags de disponibilidade, timestamps do último candle e métricas de sistema.
+    """
     model: Any | None = ml_artifacts.get("model")
     scaler = ml_artifacts.get("scaler")
 
@@ -646,7 +651,6 @@ def perform_health_checks() -> dict[str, Any]:
         "details": None if healthy else " | ".join(issues),
     }
 
-
 # --- Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -692,6 +696,13 @@ app = FastAPI(title="Bitcoin Hourly Forecaster", version="3.0.0", lifespan=lifes
     description="Endpoint leve para healthcheck de container, sem consulta externa.",
 )
 def live_check() -> dict[str, Any]:
+    """Handler do endpoint de métricas Prometheus.
+
+    Atualiza gauges de CPU e memória antes de serializar as métricas.
+
+    Returns:
+        Resposta em texto plano no formato Prometheus/OpenMetrics.
+    """
     artifacts_ready = "model" in ml_artifacts and "scaler" in ml_artifacts
     return {"status": "alive", "artifacts_ready": artifacts_ready}
 
@@ -707,6 +718,11 @@ def live_check() -> dict[str, Any]:
     ),
 )
 def health_check() -> dict[str, Any]:
+    """Handler do endpoint de histórico de previsões.
+
+    Returns:
+        Dicionário com ``total_logged`` e ``predictions`` em ordem decrescente.
+    """
     return perform_health_checks()
 
 
@@ -756,9 +772,16 @@ def predictions_history() -> dict[str, Any]:
 async def check_drift(
     request: DriftCheckRequest = Body(default_factory=DriftCheckRequest),  # noqa: B008
 ) -> dict[str, Any]:
-    """Executa a checagem assíncrona de drift.
+    """Executa a checagem assíncrona de data drift via PSI.
 
-    Este endpoint deve ser chamado por um EventBridge/Cronjob na AWS para automacao do MLOps.
+    Compara o histórico de previsões com dados de mercado reais para detectar
+    desvios estatisticamente relevantes. Deve ser chamado por EventBridge/cron.
+
+    Args:
+        request: Parâmetros da requisição com o ticker a verificar.
+
+    Returns:
+        Dicionário com o resultado de drift e metadados de automação MLOps.
     """
     result = await detect_data_drift(
         ticker=request.ticker.upper(),
@@ -807,6 +830,24 @@ def predict_next_hour(
         },
     ),  # noqa: B008
 ) -> dict[str, Any]:
+    """Executa a inferência do modelo LSTM e retorna a previsão do próximo fechamento.
+
+    Suporta modelos single-feature (log_return) e multi-feature (OHLCV + indicadores
+    técnicos). Registra a previsão no histórico circular para fins de auditoria e
+    monitoramento de drift.
+
+    Args:
+        request: Parâmetros da requisição com ticker e flag de candle parcial.
+
+    Returns:
+        Dicionário compatível com :class:`PredictionResponse` com o preço previsto,
+        janela temporal em UTC e BRT, intervalo de confiança e fonte de dados.
+
+    Raises:
+        fastapi.HTTPException: 400 para ticker inválido ou dados insuficientes;
+            503 para artefatos ou dados de mercado indisponíveis;
+            500 para erros internos de inferência.
+    """
     start_proc = time.perf_counter()
     ticker = request.ticker.upper()
 
@@ -855,8 +896,7 @@ def predict_next_hour(
                     ),
                 )
             ohlcv = df[["Close", "High", "Low", "Volume"]].dropna()
-            if not request.use_partial_candle:
-                ohlcv = ohlcv.loc[close_series.index]
+            ohlcv = ohlcv.loc[close_series.index]
 
             # Reuso do cálculo compartilhado de features técnicas.
             features_df = _build_feature_matrix(ohlcv)
@@ -995,7 +1035,23 @@ def predict_next_hour(
     ),
 )
 def chat(request: ChatRequest) -> dict[str, Any]:
-    """Endpoint de chat com o Agente ReAct LangChain."""
+    """Handler do endpoint de chat com o Agente ReAct LangChain.
+
+    Aplica guardrails de entrada antes de delegar ao agente e guardrails de saída
+    antes de retornar. Publica métricas de latência e erro no CloudWatch.
+
+    Args:
+        request: Mensagem do usuário em linguagem natural.
+
+    Returns:
+        Dicionário compatível com :class:`ChatResponse` com a resposta do agente
+        e os passos intermediários executados.
+
+    Raises:
+        fastapi.HTTPException: 400 quando a entrada é bloqueada pelos guardrails;
+            503 quando o agente não pode ser inicializado;
+            500 para erros internos de execução do agente.
+    """
     start_proc = time.perf_counter()
     is_error = False
 
@@ -1041,7 +1097,7 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         raise
     finally:
         latency_ms = (time.perf_counter() - start_proc) * 1000
-        _publish_cloudwatch_llm_metrics(latency_ms=latency_ms, is_error=is_error)
+        publish_cloudwatch_llm_metrics(latency_ms=latency_ms, is_error=is_error)
 
 
 if __name__ == "__main__":
