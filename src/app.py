@@ -53,6 +53,8 @@ from src.agent.llm_config import (
 )
 from src.domain.constants import (
     LOOKBACK,
+    MODEL_PATH,
+    SCALER_PATH,
     SUPPORTED_TICKER,
 )
 from src.domain.inference import (
@@ -232,8 +234,6 @@ class DriftCheckRequest(BaseModel):
 
 
 # --- Configuração geral ---
-MODEL_PATH = "models/lstm_btc_hourly.keras"
-SCALER_PATH = "models/scaler_btc.gz"
 SCALER_RETURN_PATH = "models/scaler_btc_return.gz"
 MODEL_META_PATH = "models/model_metadata_btc.json"
 CACHE_TTL_SECONDS = 30

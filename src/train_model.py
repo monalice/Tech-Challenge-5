@@ -29,17 +29,26 @@ from tensorflow.keras.layers import LSTM, Bidirectional, Dense, Dropout
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.optimizers import Adam
 
+from src.domain.constants import (
+    BINANCE_API_URL,
+    BINANCE_SYMBOL,
+    BINANCE_TIMEOUT_SECONDS,
+    LOOKBACK,
+    MODEL_META_PATH,
+    MODEL_PATH,
+    SCALER_PATH,
+    SCALER_RETURN_PATH,
+    TICKER,
+)
 from src.features.technical_features import FEATURE_COLUMNS, build_feature_matrix as _build_feature_matrix
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
 # Configurações
-TICKER = "BTC-USD"
 PERIOD = "730d"
 INTERVAL = "1h"
 
-LOOKBACK = 60
 BATCH_SIZE = 64
 EPOCHS = 100
 TEST_SIZE_PCT = 0.2
@@ -54,15 +63,7 @@ DOWNLOAD_BASE_BACKOFF_SECONDS = 30
 DOWNLOAD_MAX_BACKOFF_SECONDS = 120
 CACHE_DATA_PATH = "models/btc_hourly_cache.csv"
 
-BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
-BINANCE_SYMBOL = "BTCUSDT"
-BINANCE_TIMEOUT_SECONDS = 10
 BINANCE_KLINE_LIMIT = 1000  # máximo por request
-
-MODEL_PATH = "models/lstm_btc_hourly.keras"
-SCALER_PATH = "models/scaler_btc.gz"
-SCALER_RETURN_PATH = "models/scaler_btc_return.gz"
-MODEL_META_PATH = "models/model_metadata_btc.json"
 
 MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "btc-hourly-forecast")
 MLFLOW_ARTIFACT_URI = os.getenv("MLFLOW_ARTIFACT_URI")

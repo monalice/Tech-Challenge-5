@@ -20,6 +20,9 @@ LOOKBACK: int = 60
 #: Único ticker aceito pela API e pelo agente.
 SUPPORTED_TICKER: str = "BTC-USD"
 
+#: Alias de compatibilidade para módulos legados que usam TICKER.
+TICKER: str = SUPPORTED_TICKER
+
 # ---------------------------------------------------------------------------
 # Fuso horário
 # ---------------------------------------------------------------------------
@@ -46,6 +49,22 @@ BINANCE_TIMEOUT_SECONDS: int = 10
 
 #: Timeout (segundos) para chamadas ao yfinance.
 YFINANCE_TIMEOUT_SECONDS: int = 10
+
+# ---------------------------------------------------------------------------
+# Paths de artefatos do modelo
+# ---------------------------------------------------------------------------
+
+#: Caminho do modelo principal serializado (Keras).
+MODEL_PATH: str = "models/lstm_btc_hourly.keras"
+
+#: Caminho do scaler principal das features.
+SCALER_PATH: str = "models/scaler_btc.gz"
+
+#: Caminho do scaler específico do alvo (log_return).
+SCALER_RETURN_PATH: str = "models/scaler_btc_return.gz"
+
+#: Caminho do arquivo JSON com metadados do modelo.
+MODEL_META_PATH: str = "models/model_metadata_btc.json"
 
 # ---------------------------------------------------------------------------
 # Estatística
