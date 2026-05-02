@@ -96,5 +96,5 @@ Baseline registrado no metadata:
 
 - [models/lstm_btc_hourly.keras](models/lstm_btc_hourly.keras)
 - [models/model_metadata_btc.json](models/model_metadata_btc.json)
-- [src/train_model.py](src/train_model.py)
+- [training/train_model.py](training/train_model.py)
 - [src/app.py](src/app.py)

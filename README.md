@@ -183,7 +183,7 @@ Copie [.env.example](.env.example) para `.env` e preencha com os valores reais. 
 ### 2. Executar o treinamento
 
 ```powershell
-Get-Content .env | ForEach-Object { if ($_ -match '^[^#]') { $k,$v = $_ -split '=',2; [System.Environment]::SetEnvironmentVariable($k,$v) } }; .venv\Scripts\python.exe -u src/train_model.py
+Get-Content .env | ForEach-Object { if ($_ -match '^[^#]') { $k,$v = $_ -split '=',2; [System.Environment]::SetEnvironmentVariable($k,$v) } }; .venv\Scripts\python.exe -u training/train_model.py
 ```
 
 Saídas geradas em `models/`:
@@ -195,7 +195,7 @@ Saídas geradas em `models/`:
 
 ### Melhorias no pipeline de treino
 
-O modelo treinado com `train_model.py` incorpora:
+O modelo treinado com `training/train_model.py` incorpora:
 
 - **Features técnicas**: além do `log_return`, usa RSI(14), MACD Signal, Bollinger %B, razão de SMA(7/21) e razão de volume — totalizando 6 features de entrada.
 - **Arquitetura bidirecional**: LSTM Bidirecional + 2 camadas LSTM adicionais para melhor captura de padrões temporais.
@@ -250,7 +250,7 @@ O setup realiza:
 O pipeline DVC orquestra:
 
 - `prepare_data`: geração/atualização de `models/btc_hourly_cache.csv`
-- `train_model`: treino do modelo em [src/train_model.py](src/train_model.py)
+- `train_model`: treino do modelo em [training/train_model.py](training/train_model.py)
 
 ### Estratégia segura para dados mínimos de teste
 
@@ -321,7 +321,7 @@ make type-check    # mypy com --explicit-package-bases
 make security      # bandit -r src/
 make test          # pytest com cobertura mínima de 60 %
 make quality       # lint + type-check + security + test
-make train         # executa src/train_model.py
+make train         # executa training/train_model.py
 make serve         # sobe a API localmente com reload
 make docker-build  # docker build -t btc-predictor:latest .
 make llm-judge     # avalia golden set com 3 criterios e gera saidas latest + versionada
@@ -657,7 +657,7 @@ Componentes implementados:
 | `DRIFT_CHECK_INTERVAL_HOURS` | `24` | Intervalo do scheduler |
 | `DRIFT_ALERT_WEBHOOK_URL` | vazio | Webhook de alerta (Slack/Teams/etc.) |
 | `DRIFT_RETRAIN_ENABLED` | `false` | Habilita execução real do retreino |
-| `DRIFT_RETRAIN_COMMAND` | `python -u src/train_model.py` | Comando de retreino |
+| `DRIFT_RETRAIN_COMMAND` | `python -u training/train_model.py` | Comando de retreino |
 | `DRIFT_RETRAIN_TIMEOUT_SECONDS` | `900` | Timeout do comando de retreino |
 | `DRIFT_AUTOMATION_API_URL` | `http://127.0.0.1:8000` | URL base da API para o scheduler |
 | `DRIFT_AUTOMATION_TICKER` | `BTC-USD` | Ticker usado no scheduler |

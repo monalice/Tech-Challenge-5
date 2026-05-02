@@ -2,9 +2,16 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
+
+# Garante import absoluto de 'src' mesmo quando executado por caminho relativo.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import joblib
 import mlflow

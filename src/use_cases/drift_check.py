@@ -200,7 +200,7 @@ class DriftAutomationConfig:
     check_interval_hours: int = 24
     alert_webhook_url: str | None = None
     retrain_enabled: bool = False
-    retrain_command: str = "python -u src/train_model.py"
+    retrain_command: str = "python -u training/train_model.py"
     retrain_timeout_seconds: int = 900
     mlflow_tracking_uri: str = "http://localhost:5000"
     mlflow_experiment_name: str = "btc-hourly-serving"
@@ -249,7 +249,7 @@ class DriftAutomationConfig:
             retrain_enabled=cls._to_bool(os.getenv("DRIFT_RETRAIN_ENABLED"), default=False),
             retrain_command=os.getenv(
                 "DRIFT_RETRAIN_COMMAND",
-                "python -u src/train_model.py",
+                "python -u training/train_model.py",
             ),
             retrain_timeout_seconds=int(
                 os.getenv("DRIFT_RETRAIN_TIMEOUT_SECONDS", "900")
@@ -416,7 +416,7 @@ def _trigger_retraining(
     """Dispara o pipeline de retreinamento como subprocesso bloqueante.
 
     Args:
-        command: Comando shell a ser executado (ex.: ``"python -u src/train_model.py"``).
+        command: Comando shell a ser executado (ex.: ``"python -u training/train_model.py"``).
         timeout_seconds: Tempo máximo em segundos para aguardar a conclusão.
 
     Returns:

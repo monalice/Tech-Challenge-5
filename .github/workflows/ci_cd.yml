@@ -61,7 +61,7 @@ jobs:
         run: |
           python -m mypy \
             src/app.py \
-            src/train_model.py \
+            training/train_model.py \
             src/agent/rag_pipeline.py \
             src/agent/react_agent.py \
             src/security/guardrails.py \

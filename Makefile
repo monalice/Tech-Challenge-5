@@ -16,7 +16,7 @@ security:
 	bandit -r src/ -c pyproject.toml
 
 train:
-	python -u src/train_model.py
+	python -u training/train_model.py
 
 serve:
 	uvicorn src.app:app --host 0.0.0.0 --port 8000 --reload

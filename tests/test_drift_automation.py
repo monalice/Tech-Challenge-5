@@ -107,7 +107,7 @@ def test_process_drift_result_retrain_enabled(monkeypatch):
         psi_warning_threshold=0.1,
         psi_retrain_threshold=0.2,
         retrain_enabled=True,
-        retrain_command="python -u src/train_model.py",
+        retrain_command="python -u training/train_model.py",
     )
 
     monkeypatch.setattr(

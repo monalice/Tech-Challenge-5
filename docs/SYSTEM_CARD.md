@@ -7,7 +7,7 @@ O sistema combina uma API FastAPI, um modelo LSTM de previsão horária de Bitco
 ## Componentes Principais
 
 - API FastAPI em [src/app.py](src/app.py)
-- Pipeline de treino em [src/train_model.py](src/train_model.py)
+- Pipeline de treino em [training/train_model.py](training/train_model.py)
 - Agente ReAct em [src/agent/react_agent.py](src/agent/react_agent.py)
 - Guardrails de entrada e saída em [src/security/guardrails.py](src/security/guardrails.py)
 - Infraestrutura como código em [infra/terraform/main.tf](infra/terraform/main.tf)

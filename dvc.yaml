@@ -1,15 +1,15 @@
 stages:
   prepare_data:
-    cmd: python -c "from src.train_model import download_crypto_data, save_cached_data; data = download_crypto_data(); save_cached_data(data)"
+    cmd: python -c "from training.train_model import download_crypto_data, save_cached_data; data = download_crypto_data(); save_cached_data(data)"
     deps:
-      - src/train_model.py
+      - training/train_model.py
     outs:
       - models/btc_hourly_cache.csv
 
   train_model:
-    cmd: python -u src/train_model.py
+    cmd: python -u training/train_model.py
     deps:
-      - src/train_model.py
+      - training/train_model.py
       - models/btc_hourly_cache.csv
     outs:
       - models/lstm_btc_hourly.keras
