@@ -405,6 +405,7 @@ PROMOTION_APPROVAL_ENV_VAR = "MLFLOW_PROMOTION_APPROVED"
 PROMOTION_ADMIN_COMMAND_ENV_VAR = "MLFLOW_ADMIN_COMMAND"
 CHAMPION_ALIAS = os.getenv("MLFLOW_CHAMPION_ALIAS", "champion")
 CANDIDATE_ALIAS = os.getenv("MLFLOW_CANDIDATE_ALIAS", "candidate")
+INITIAL_REGISTRY_ALIAS = os.getenv("MLFLOW_INITIAL_REGISTRY_ALIAS", "Staging")
 
 
 def _is_alias_not_found_error(error: Exception) -> bool:
@@ -558,6 +559,65 @@ def mark_challenger_as_candidate(registered_model_version: str, reason: str) -> 
         registered_model_version,
         reason,
     )
+
+
+def set_required_tags_on_active_run(tags: dict[str, Any]) -> dict[str, Any]:
+    """Valida e persiste tags obrigatórias na run ativa do MLflow.
+
+    Raises:
+        ValueError: Se qualquer tag obrigatória estiver ausente ou inválida.
+        RuntimeError: Se não houver run ativa no contexto.
+    """
+    active_run = mlflow.active_run()
+    if active_run is None:
+        raise RuntimeError("Nenhuma run ativa encontrada para persistir tags obrigatórias.")
+
+    validated_tags = validate_mlflow_metadata_tags(tags, context="run")
+    mlflow.set_tags(validated_tags)
+    return validated_tags
+
+
+def register_challenger_initial_state(registered_model_version: str) -> str:
+    """Registra o modelo recém-treinado apenas como Challenger/Staging.
+
+    Este método NÃO promove para produção; apenas define o estado inicial no Registry.
+    """
+    alias = INITIAL_REGISTRY_ALIAS.strip() or "Staging"
+    if alias.lower() not in {"challenger", "staging"}:
+        raise ValueError(
+            "MLFLOW_INITIAL_REGISTRY_ALIAS inválido. Use apenas 'Challenger' ou 'Staging'."
+        )
+
+    client = mlflow.MlflowClient()
+    client.set_registered_model_alias(
+        name=MLFLOW_MODEL_NAME,
+        alias=alias,
+        version=registered_model_version,
+    )
+    client.set_model_version_tag(
+        name=MLFLOW_MODEL_NAME,
+        version=registered_model_version,
+        key="lifecycle_state",
+        value="challenger",
+    )
+    client.set_model_version_tag(
+        name=MLFLOW_MODEL_NAME,
+        version=registered_model_version,
+        key="deployment_stage",
+        value=alias.lower(),
+    )
+    client.set_model_version_tag(
+        name=MLFLOW_MODEL_NAME,
+        version=registered_model_version,
+        key="promotion_status",
+        value="pending_evaluation",
+    )
+    logger.info(
+        "Modelo registrado sem promoção automática. Alias inicial '%s' para versão %s.",
+        alias,
+        registered_model_version,
+    )
+    return alias
 
 
 def handle_champion_challenger_outcome(challenger_version: str, challenger_mae: float) -> str:
@@ -938,7 +998,6 @@ def main() -> None:
         "dvc_data_hash": data_lineage["dvc_data_hash"],
         "fairness_checked": fairness_status["fairness_checked"],
     }
-    validated_run_tags = validate_mlflow_metadata_tags(run_tags, context="run")
 
     params = {
         "ticker": TICKER,
@@ -967,7 +1026,7 @@ def main() -> None:
     }
 
     with mlflow.start_run(run_name=f"{TICKER}_{INTERVAL}_training"):
-        mlflow.set_tags(validated_run_tags)
+        validated_run_tags = set_required_tags_on_active_run(run_tags)
         mlflow.log_params(params)
         mlflow.set_tag("fairness_artifact_path", fairness_status["artifact_path"])
         mlflow.set_tag("fairness_artifact_status", fairness_status["status"])
@@ -1060,7 +1119,7 @@ def main() -> None:
 
         callbacks = [
             EarlyStopping(monitor="val_loss", patience=15, restore_best_weights=True),
-            ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=7, min_lr=1e-6, verbose=1),
+            ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=7, min_lr=1e-6, verbose=0),
         ]
 
         model.fit(
@@ -1070,7 +1129,7 @@ def main() -> None:
             epochs=EPOCHS,
             validation_data=(X_val, y_val),
             callbacks=callbacks,
-            verbose=1,
+            verbose=0,
         )
 
         # 7. Avaliação no conjunto de teste
@@ -1192,12 +1251,9 @@ def main() -> None:
         )
         logger.info("Artefatos registrados no MLflow (model/.keras, scalers/.gz e metadata).")
 
-        # 9. Champion-challenger com promocao automatica para versão validada.
-        promotion_outcome = handle_champion_challenger_outcome(
-            challenger_version=challenger_version,
-            challenger_mae=mae,
-        )
-        logger.info("Resultado do gate de promocao: %s", promotion_outcome)
+        # 9. Sem promoção automática: mantém somente estado inicial Challenger/Staging.
+        initial_alias = register_challenger_initial_state(challenger_version)
+        logger.info("Estado inicial aplicado no Registry: %s", initial_alias)
 
         logger.info("\n%s", "=" * 40)
         logger.info("RELATORIO DE PERFORMANCE (%s - HORARIO)", TICKER)
@@ -1222,6 +1278,13 @@ def main() -> None:
         active_run = mlflow.active_run()
         run_id = active_run.info.run_id if active_run is not None else "unknown"
         logger.info("MLflow run finalizada: %s", run_id)
+
+        # stdout estrito para Step Functions: apenas JSON com run_id e model_version.
+        output_payload = {
+            "run_id": run_id,
+            "model_version": str(challenger_version),
+        }
+        print(json.dumps(output_payload, ensure_ascii=True))
 
 
 if __name__ == "__main__":
