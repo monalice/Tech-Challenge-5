@@ -6,8 +6,6 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
-from zoneinfo import ZoneInfo
-
 import joblib
 import mlflow
 import numpy as np
@@ -57,6 +55,21 @@ from src.agent.llm_config import (
     is_production_environment,
     publish_cloudwatch_llm_metrics,
     validate_bedrock_configuration_for_startup,
+)
+from src.domain.constants import (
+    BINANCE_API_URL,
+    BINANCE_SYMBOL,
+    BINANCE_TIMEOUT_SECONDS,
+    BRASILIA_TZ,
+    LOOKBACK,
+    SUPPORTED_TICKER,
+    YFINANCE_TIMEOUT_SECONDS,
+    Z_SCORE_95_CONFIDENCE,
+)
+from src.domain.time_utils import (
+    remove_incomplete_hour_candle,
+    timestamp_to_brt_iso,
+    timestamp_to_utc_iso,
 )
 
 # --- Logging estruturado ---
@@ -223,21 +236,14 @@ class DriftCheckRequest(BaseModel):
 
 # --- Configuração geral ---
 ml_artifacts: dict[str, Any] = {}
-SUPPORTED_TICKER = "BTC-USD"
-LOOKBACK = 60
 MODEL_PATH = "models/lstm_btc_hourly.keras"
 SCALER_PATH = "models/scaler_btc.gz"
 SCALER_RETURN_PATH = "models/scaler_btc_return.gz"
 MODEL_META_PATH = "models/model_metadata_btc.json"
 CACHE_TTL_SECONDS = 30
-YFINANCE_TIMEOUT_SECONDS = 10
 YFINANCE_MAX_RETRIES = 3
-BINANCE_SYMBOL = "BTCUSDT"
-BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
-BINANCE_TIMEOUT_SECONDS = 10
 PREDICTIONS_HISTORY_MAX = 100
 market_cache: dict[str, dict[str, Any]] = {}
-BRASILIA_TZ = "America/Sao_Paulo"
 
 # Histórico circular de predições (MLOps)
 prediction_log: collections.deque[dict[str, Any]] = collections.deque(
@@ -279,36 +285,6 @@ METRIC_MEMORY = Gauge(
 
 
 # --- Utilitários ---
-def remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
-    """Remove o candle horário parcial (em formação) de uma série temporal.
-
-    Compara o último timestamp da série com a hora UTC atual truncada em horas.
-    Se o último candle corresponder à hora corrente (ainda não fechada), ele é
-    descartado para evitar ruído na inferência do modelo.
-
-    Args:
-        series: Série temporal de preços indexada por timestamps (tz-aware ou naive).
-
-    Returns:
-        Série sem o último elemento se ele corresponder à hora em formação;
-        caso contrário, a série original sem modificação.
-    """
-    if len(series) < 2:
-        return series
-
-    last_ts = pd.Timestamp(series.index[-1])
-    now_utc = pd.Timestamp.utcnow()
-
-    if last_ts.tzinfo is None:
-        now_ref = now_utc.tz_localize(None)
-    else:
-        now_ref = now_utc.tz_convert(last_ts.tz)
-
-    if last_ts >= now_ref.floor("h"):
-        return series.iloc[:-1]
-    return series
-
-
 def get_cached_market_data(ticker: str) -> pd.DataFrame | None:
     """Recupera dados de mercado do cache em memória se ainda estiverem válidos.
 
@@ -356,34 +332,6 @@ def get_cached_source(ticker: str) -> str:
     return str(entry.get("source", "unknown"))
 
 
-def timestamp_to_utc_iso(ts: pd.Timestamp) -> str:
-    """Converte um timestamp para string ISO-8601 em UTC.
-
-    Args:
-        ts: Timestamp pandas, tz-aware ou naive (assumido UTC se naive).
-
-    Returns:
-        String ISO-8601 com offset UTC (ex: ``"2026-04-18T14:00:00+00:00"``).
-    """
-    ts = pd.Timestamp(ts)
-    ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-    return str(ts_utc.isoformat())
-
-
-def timestamp_to_brt_iso(ts: pd.Timestamp) -> str:
-    """Converte um timestamp para string ISO-8601 no horário de Brasília (BRT/BRST).
-
-    Args:
-        ts: Timestamp pandas, tz-aware ou naive (assumido UTC se naive).
-
-    Returns:
-        String ISO-8601 com offset de Brasília (ex: ``"2026-04-18T11:00:00-03:00"``).
-    """
-    ts = pd.Timestamp(ts)
-    ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-    return str(ts_utc.tz_convert(ZoneInfo(BRASILIA_TZ)).isoformat())
-
-
 def estimate_uncertainty(
     predicted_price: float, metadata: dict[str, Any]
 ) -> tuple[float | None, ConfidenceIntervalResponse | None]:
@@ -414,7 +362,7 @@ def estimate_uncertainty(
         estimated_error_pct = float((float(rmse_price) / predicted_price) * 100)
 
     if rmse_price is not None:
-        margin = 1.96 * float(rmse_price)
+        margin = Z_SCORE_95_CONFIDENCE * float(rmse_price)
     elif estimated_error_pct is not None:
         margin = predicted_price * (estimated_error_pct / 100)
     else:

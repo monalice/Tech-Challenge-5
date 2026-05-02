@@ -3,6 +3,8 @@ import os
 import re
 from typing import Any
 
+from src.agent.llm_config import resolve_aws_region as _resolve_aws_region
+
 try:
     import boto3  # type: ignore[import-not-found]
 except ImportError:
@@ -32,12 +34,7 @@ class _BedrockGuardrailBase:
         guardrail_version: str | None = None,
         client: Any | None = None,
     ) -> None:
-        self.region_name = (
-            region_name
-            or os.getenv("BEDROCK_AWS_REGION")
-            or os.getenv("AWS_REGION")
-            or os.getenv("AWS_DEFAULT_REGION")
-        )
+        self.region_name = region_name or _resolve_aws_region()
         self.guardrail_identifier = guardrail_identifier or os.getenv("BEDROCK_GUARDRAIL_ID")
         self.guardrail_version = guardrail_version or os.getenv("BEDROCK_GUARDRAIL_VERSION")
         self._client = client

@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from langchain_aws import BedrockEmbeddings
 from langchain_core.documents import Document
+from src.agent.llm_config import resolve_aws_region
 
 DEFAULT_EMBEDDING_MODEL = os.getenv(
     "RAG_EMBEDDING_MODEL",
@@ -90,11 +91,7 @@ def build_bedrock_embeddings(
     Returns:
         Instância de :class:`BedrockEmbeddings` pronta para uso.
     """
-    region_name = (
-        os.getenv("BEDROCK_AWS_REGION")
-        or os.getenv("AWS_REGION")
-        or os.getenv("AWS_DEFAULT_REGION")
-    )
+    region_name = resolve_aws_region()
     if not region_name:
         raise OSError(
             "A região AWS para embeddings Bedrock não está definida. "

@@ -18,7 +18,6 @@ import logging
 import os
 import time
 from typing import Any, cast
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -38,21 +37,27 @@ except ImportError:
     _LANGFUSE_AVAILABLE = False
 
 from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
+from src.agent.llm_config import resolve_aws_region
 from src.features.technical_features import build_feature_matrix
 from src.security.guardrails import InputGuardrail, OutputGuardrail
+from src.domain.constants import (
+    BINANCE_API_URL,
+    BINANCE_SYMBOL,
+    BINANCE_TIMEOUT_SECONDS,
+    BRASILIA_TZ,
+    LOOKBACK,
+    SUPPORTED_TICKER,
+    YFINANCE_TIMEOUT_SECONDS,
+    Z_SCORE_95_CONFIDENCE,
+)
+from src.domain.time_utils import (
+    remove_incomplete_hour_candle,
+    remove_incomplete_hour_candle_df,
+    timestamp_to_brt_iso,
+    timestamp_to_utc_iso,
+)
 
 logger = logging.getLogger("stockcast.agent")
-
-# ---------------------------------------------------------------------------
-# Constantes (espelham app.py para manter consistência)
-# ---------------------------------------------------------------------------
-LOOKBACK = 60
-SUPPORTED_TICKER = "BTC-USD"
-BRASILIA_TZ = "America/Sao_Paulo"
-BINANCE_SYMBOL = "BTCUSDT"
-BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
-BINANCE_TIMEOUT_SECONDS = 10
-YFINANCE_TIMEOUT_SECONDS = 10
 YFINANCE_MAX_RETRIES = 2
 DEFAULT_AGENT_LLM_MODEL = os.getenv(
     "AGENT_LLM_MODEL",
@@ -125,76 +130,6 @@ def _resolve_agent_top_k() -> int | None:
         Valor de top-k como int, ou ``None`` quando não configurado.
     """
     return _get_env_optional_int("AGENT_LLM_TOP_K", "GEMINI_TOP_K")
-
-
-def _resolve_bedrock_region() -> str | None:
-    """Resolve a região AWS para Amazon Bedrock a partir das variáveis de ambiente.
-
-    Verifica, em ordem de prioridade: ``BEDROCK_AWS_REGION``, ``AWS_REGION`` e
-    ``AWS_DEFAULT_REGION``.
-
-    Returns:
-        String com a região AWS (ex: ``"us-east-1"``), ou ``None`` quando nenhuma
-        variável estiver definida.
-    """
-    return (
-        os.getenv("BEDROCK_AWS_REGION")
-        or os.getenv("AWS_REGION")
-        or os.getenv("AWS_DEFAULT_REGION")
-    )
-
-def _remove_incomplete_hour_candle(series: pd.Series) -> pd.Series:
-    """Remove o candle horário parcial (em formação) de uma série temporal.
-
-    Compara o último timestamp da série com a hora atual UTC truncada. Se o
-    último candle corresponder à hora corrente (ainda não fechada), ele é
-    descartado para evitar ruído na previsão.
-
-    Args:
-        series: Série temporal indexada por timestamps (aware ou naive).
-
-    Returns:
-        Série sem o último elemento se ele corresponder à hora em formação;
-        caso contrário, a série original sem modificação.
-    """
-    if len(series) < 2:
-        return series
-    last_ts = pd.Timestamp(series.index[-1])
-    now_utc = pd.Timestamp.utcnow()
-    now_ref = (
-        now_utc.tz_localize(None) if last_ts.tzinfo is None else now_utc.tz_convert(last_ts.tz)
-    )
-    if last_ts >= now_ref.floor("h"):
-        return series.iloc[:-1]
-    return series
-
-
-def _ts_to_utc_iso(ts: pd.Timestamp) -> str:
-    """Converte um timestamp para string ISO-8601 em UTC.
-
-    Args:
-        ts: Timestamp pandas, tz-aware ou naive (assumido UTC se naive).
-
-    Returns:
-        String ISO-8601 com offset UTC (ex: ``"2026-04-18T14:00:00+00:00"``).
-    """
-    ts = pd.Timestamp(ts)
-    ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-    return str(ts_utc.isoformat())
-
-
-def _ts_to_brt_iso(ts: pd.Timestamp) -> str:
-    """Converte um timestamp para string ISO-8601 no horário de Brasília.
-
-    Args:
-        ts: Timestamp pandas, tz-aware ou naive (assumido UTC se naive).
-
-    Returns:
-        String ISO-8601 com offset de Brasília (ex: ``"2026-04-18T11:00:00-03:00"``).
-    """
-    ts = pd.Timestamp(ts)
-    ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-    return str(ts_utc.tz_convert(ZoneInfo(BRASILIA_TZ)).isoformat())
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +260,7 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
                 if not {"High", "Low", "Volume"}.issubset(df.columns):
                     return "Dados OHLCV indisponíveis para inferência multi-feature."
                 ohlcv = df[["Close", "High", "Low", "Volume"]].dropna()
-                ohlcv = _remove_incomplete_hour_candle_df(ohlcv)
+                ohlcv = remove_incomplete_hour_candle_df(ohlcv)
 
                 features_df = build_feature_matrix(ohlcv)
 
@@ -361,7 +296,7 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
                 last_ts = pd.Timestamp(features_df.index[-1])
             else:
                 close_series = df["Close"].dropna()
-                close_series = _remove_incomplete_hour_candle(close_series)
+                close_series = remove_incomplete_hour_candle(close_series)
                 log_price = pd.Series(np.log(close_series.values), index=close_series.index)
                 ret_series = log_price.diff().dropna()
 
@@ -394,7 +329,7 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
             rmse = metrics.get("rmse_price")
             confidence_info = ""
             if rmse is not None:
-                margin = 1.96 * float(rmse)
+                margin = Z_SCORE_95_CONFIDENCE * float(rmse)
                 ci_low = max(0.0, predicted_price - margin)
                 ci_high = predicted_price + margin
                 confidence_info = f" | IC 95%: [{ci_low:,.2f} – {ci_high:,.2f}] USD"
@@ -402,10 +337,10 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
                 confidence_info = f" | erro estimado: {float(mape):.2f}%"
 
             result = (
-                f"Previsão BTC-USD para {_ts_to_brt_iso(forecast_for_ts)} (BRT): "
+                f"Previsão BTC-USD para {timestamp_to_brt_iso(forecast_for_ts)} (BRT): "
                 f"**USD {predicted_price:,.2f}**{confidence_info}\n"
-                f"Último candle usado: {_ts_to_brt_iso(last_ts)} (BRT)\n"
-                f"Fechamento previsto até: {_ts_to_brt_iso(forecast_close_ts)} (BRT)\n"
+                f"Último candle usado: {timestamp_to_brt_iso(last_ts)} (BRT)\n"
+                f"Fechamento previsto até: {timestamp_to_brt_iso(forecast_close_ts)} (BRT)\n"
                 f"Fonte de dados: {data_source}"
             )
             logger.info("[agent:previsao_bitcoin] %s", result)
@@ -428,7 +363,7 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
         try:
             df, data_source = _download_market_data(SUPPORTED_TICKER)
             close_series = df["Close"].dropna()
-            close_series = _remove_incomplete_hour_candle(close_series)
+            close_series = remove_incomplete_hour_candle(close_series)
 
             if len(close_series) < 2:
                 return "Dados insuficientes para calcular cotação e variação."
@@ -459,7 +394,7 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
                 f"Preço atual: **USD {last_price:,.2f}**\n"
                 f"Variação vs candle anterior: {direction} {price_change_pct:+.2f}%"
                 f"{price_24h_info}{volume_info}\n"
-                f"Referência: {_ts_to_brt_iso(last_ts)} (BRT)\n"
+                f"Referência: {timestamp_to_brt_iso(last_ts)} (BRT)\n"
                 f"Fonte: {data_source}"
             )
             logger.info(
@@ -528,28 +463,6 @@ def _make_tools(ml_artifacts: dict[str, Any]) -> list[Any]:
         return "\n\n".join(formatted_contexts)
 
     return [previsao_bitcoin, cotacao_atual, crypto_knowledge_rag]
-
-
-def _remove_incomplete_hour_candle_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove a última linha do DataFrame se ela corresponder ao candle em formação.
-
-    Args:
-        df: DataFrame com índice DatetimeIndex. Deve ter pelo menos 2 linhas.
-
-    Returns:
-        DataFrame sem a última linha quando ela representa a hora corrente em
-        formação; caso contrário, o DataFrame original sem modificação.
-    """
-    if len(df) < 2:
-        return df
-    last_ts = pd.Timestamp(df.index[-1])
-    now_utc = pd.Timestamp.utcnow()
-    now_ref = (
-        now_utc.tz_localize(None) if last_ts.tzinfo is None else now_utc.tz_convert(last_ts.tz)
-    )
-    if last_ts >= now_ref.floor("h"):
-        return df.iloc[:-1]
-    return df
 
 
 class _GuardedAgentExecutor:
@@ -700,7 +613,7 @@ def build_agent(ml_artifacts: dict[str, Any]) -> AgentExecutor:
         AgentExecutor pronto para receber ``{"input": "<pergunta>"}``
         via ``.invoke()``.
     """
-    bedrock_region = _resolve_bedrock_region()
+    bedrock_region = resolve_aws_region()
     if not bedrock_region:
         raise OSError(
             "A região AWS para Amazon Bedrock não está definida. Use BEDROCK_AWS_REGION, AWS_REGION ou AWS_DEFAULT_REGION."

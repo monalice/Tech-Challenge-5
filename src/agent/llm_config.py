@@ -78,8 +78,8 @@ def _is_true(value: str | None, default: bool = True) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _resolve_cloudwatch_region() -> str | None:
-    """Resolve a região AWS para publicação de métricas CloudWatch.
+def resolve_aws_region() -> str | None:
+    """Resolve a região AWS a partir das variáveis de ambiente.
 
     Lê as variáveis de ambiente em ordem de prioridade: ``BEDROCK_AWS_REGION``,
     ``AWS_REGION``, ``AWS_DEFAULT_REGION``.
@@ -180,7 +180,7 @@ def publish_cloudwatch_llm_metrics(*, latency_ms: float, is_error: bool) -> None
         logger.warning("boto3 indisponível para métricas CloudWatch: %s", exc)
         return
 
-    region_name = _resolve_cloudwatch_region()
+    region_name = resolve_aws_region()
     namespace = os.getenv("CW_LLM_METRICS_NAMESPACE", DEFAULT_CLOUDWATCH_NAMESPACE)
     service_name = os.getenv("CW_METRIC_SERVICE_NAME", "stockcast")
     environment_name = os.getenv("CW_METRIC_ENVIRONMENT", os.getenv("APP_ENV", "unknown"))
