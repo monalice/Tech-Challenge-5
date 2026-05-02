@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from src.serving.drift_automation import DriftAutomationConfig, process_drift_result
+from src.use_cases.drift_check import DriftAutomationConfig, process_drift_result
 
 
 class _RunCtx:
@@ -75,7 +75,7 @@ def test_process_drift_result_warning_sends_alert(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "src.serving.drift_automation.requests.post",
+        "src.use_cases.drift_check.requests.post",
         lambda *args, **kwargs: SimpleNamespace(status_code=200),
     )
 
@@ -111,7 +111,7 @@ def test_process_drift_result_retrain_enabled(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "src.serving.drift_automation.subprocess.run",
+        "src.use_cases.drift_check.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=0,
             stdout="ok",
@@ -160,7 +160,7 @@ def test_process_drift_result_retries_mlflow_and_succeeds(monkeypatch):
         mlflow_retry_backoff_seconds=0.0,
     )
 
-    monkeypatch.setattr("src.serving.drift_automation.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("src.use_cases.drift_check.time.sleep", lambda *_args, **_kwargs: None)
 
     summary = process_drift_result(_base_result(0.05), config, mlflow_module=mlflow_fake)
 
@@ -192,7 +192,7 @@ def test_process_drift_result_persists_operational_error_when_mlflow_keeps_faili
         mlflow_error_log_path=str(error_log_path),
     )
 
-    monkeypatch.setattr("src.serving.drift_automation.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("src.use_cases.drift_check.time.sleep", lambda *_args, **_kwargs: None)
 
     summary = process_drift_result(_base_result(0.05), config, mlflow_module=mlflow_fake)
 

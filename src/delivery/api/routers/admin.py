@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body
 import src.delivery.api.dependencies as _deps
 from src.delivery.api.schemas import DriftCheckRequest
 from src.domain.drift.detection import detect_data_drift
-from src.serving.drift_automation import DriftAutomationConfig, process_drift_result
+from src.use_cases.drift_check import DriftAutomationConfig, process_drift_result
 
 router = APIRouter(prefix="/admin")
 
