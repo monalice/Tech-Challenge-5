@@ -47,6 +47,11 @@ jobs:
             exit 0
           fi
 
+          AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-${DVC_AWS_DEFAULT_REGION:-us-east-1}}"
+          DVC_AWS_DEFAULT_REGION="${DVC_AWS_DEFAULT_REGION:-$AWS_DEFAULT_REGION}"
+          export AWS_DEFAULT_REGION DVC_AWS_DEFAULT_REGION
+          echo "Usando região AWS para DVC: ${DVC_AWS_DEFAULT_REGION}"
+
           echo "Credenciais DVC detectadas. Executando dvc pull antes dos testes..."
           pip install dvc[s3]
           if ! dvc pull; then
