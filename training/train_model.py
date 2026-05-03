@@ -97,7 +97,7 @@ REQUIRED_FEATURE_COLUMNS = [
     *FEATURE_COLUMNS,
 ]
 
-RAW_DATA_SCHEMA = pa.DataFrameSchema(  # type: ignore[no-untyped-call]
+RAW_DATA_SCHEMA = pa.DataFrameSchema(
     {
         "Close": pa.Column(float, nullable=False, checks=[pa.Check.gt(0)]),
         "High": pa.Column(float, nullable=False, checks=[pa.Check.gt(0)]),
@@ -115,7 +115,7 @@ RAW_DATA_SCHEMA = pa.DataFrameSchema(  # type: ignore[no-untyped-call]
     coerce=True,
 )
 
-FEATURE_DATA_SCHEMA = pa.DataFrameSchema(  # type: ignore[no-untyped-call]
+FEATURE_DATA_SCHEMA = pa.DataFrameSchema(
     {
         "log_return": pa.Column(float, nullable=False, checks=[pa.Check.in_range(-1.0, 1.0)]),
         "rsi": pa.Column(float, nullable=False, checks=[pa.Check.in_range(0.0, 1.0)]),
@@ -758,7 +758,7 @@ def log_training_artifacts(
             registered_model.name,
             registered_model.version,
         )
-        return registered_model.version
+        return str(registered_model.version)
 
 
 def normalize_download_dataframe(df: pd.DataFrame) -> pd.DataFrame:

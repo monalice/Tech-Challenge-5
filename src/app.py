@@ -19,6 +19,10 @@ from src.delivery.api.lifespan import lifespan
 from src.delivery.api.routers import admin, chat, health, predict
 from src.domain.features.technical_features import (  # noqa: F401
     compute_bollinger_pct_b as _compute_bollinger_pct_b,
+    compute_macd_signal as _compute_macd_signal,
+    compute_rsi as _compute_rsi,
+    compute_sma_ratio as _compute_sma_ratio,
+    compute_volume_ratio as _compute_volume_ratio,
 )
 from src.domain.time_utils import (  # noqa: F401
     remove_incomplete_hour_candle,
@@ -30,6 +34,27 @@ from src.use_cases.market_cache import (  # noqa: F401
     get_cached_source,
     set_cached_market_data,
 )
+
+__all__ = [
+    "app",
+    "download_with_retry",
+    "estimate_uncertainty",
+    "prediction_log",
+    "load_trained_model",
+    "is_production_environment",
+    "validate_bedrock_configuration_for_startup",
+    "_compute_bollinger_pct_b",
+    "_compute_macd_signal",
+    "_compute_rsi",
+    "_compute_sma_ratio",
+    "_compute_volume_ratio",
+    "remove_incomplete_hour_candle",
+    "timestamp_to_brt_iso",
+    "timestamp_to_utc_iso",
+    "get_cached_market_data",
+    "get_cached_source",
+    "set_cached_market_data",
+]
 
 # --- Logging estruturado ---
 logging.basicConfig(

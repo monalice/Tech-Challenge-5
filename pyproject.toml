@@ -56,7 +56,7 @@ module = [
   "sklearn.*",
   "tensorflow.*",
   "langchain.*",
-  "langchain_google_genai.*",
+  "langfuse.*",
   "presidio_analyzer.*",
   "presidio_anonymizer.*",
   "evidently.*",

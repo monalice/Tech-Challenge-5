@@ -175,7 +175,7 @@ def publish_cloudwatch_llm_metrics(*, latency_ms: float, is_error: bool) -> None
         return
 
     try:
-        import boto3  # type: ignore[import-untyped]
+        import boto3
     except Exception as exc:
         logger.warning("boto3 indisponível para métricas CloudWatch: %s", exc)
         return

@@ -172,11 +172,12 @@ async def detect_data_drift(
     """
     if download_fn is None or prediction_log is None:
         from src import app as app_module
+        app_module_any = app_module  # type: Any
 
         if download_fn is None:
-            download_fn = app_module.download_with_retry
+            download_fn = app_module_any.download_with_retry
         if prediction_log is None:
-            prediction_log = app_module.prediction_log
+            prediction_log = app_module_any.prediction_log
 
     market_df, data_source = download_fn(ticker)
     prediction_df = _extract_prediction_dataframe(prediction_log)

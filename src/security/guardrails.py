@@ -1,7 +1,7 @@
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 
 def resolve_aws_region() -> str | None:
@@ -14,16 +14,20 @@ def resolve_aws_region() -> str | None:
 
 
 try:
-    import boto3  # type: ignore[import-not-found]
+    import boto3
 except ImportError:
-    boto3 = None  # type: ignore[assignment]
+    boto3 = None
 
+ANALYZER_ENGINE_CLS: Any | None = None
+ANONYMIZER_ENGINE_CLS: Any | None = None
 try:
-    from presidio_analyzer import AnalyzerEngine  # type: ignore[import-not-found]
-    from presidio_anonymizer import AnonymizerEngine  # type: ignore[import-not-found]
+    from presidio_analyzer import AnalyzerEngine as _ImportedAnalyzerEngine
+    from presidio_anonymizer import AnonymizerEngine as _ImportedAnonymizerEngine
+
+    ANALYZER_ENGINE_CLS = _ImportedAnalyzerEngine
+    ANONYMIZER_ENGINE_CLS = _ImportedAnonymizerEngine
 except ImportError:
-    AnalyzerEngine = None  # type: ignore[assignment]
-    AnonymizerEngine = None  # type: ignore[assignment]
+    pass
 
 
 @dataclass
@@ -333,19 +337,24 @@ class OutputGuardrail(_BedrockGuardrailBase):
     @staticmethod
     def _anonymize_pii_with_presidio(text: str) -> str:
         """Tenta anonimização via Presidio; usa fallback regex se indisponível."""
-        if AnalyzerEngine is None or AnonymizerEngine is None:
+        if ANALYZER_ENGINE_CLS is None or ANONYMIZER_ENGINE_CLS is None:
             return OutputGuardrail._anonymize_pii_with_regex(text)
 
         try:
-            analyzer = AnalyzerEngine()
-            anonymizer = AnonymizerEngine()
+            analyzer_cls = cast(Any, ANALYZER_ENGINE_CLS)
+            anonymizer_cls = cast(Any, ANONYMIZER_ENGINE_CLS)
+            analyzer = analyzer_cls()
+            anonymizer = anonymizer_cls()
             entities = ["EMAIL_ADDRESS", "PHONE_NUMBER", "BR_CPF", "CPF"]
             results = analyzer.analyze(text=text, language="pt", entities=entities)
             if not results:
                 results = analyzer.analyze(text=text, language="en", entities=entities)
             if not results:
                 return OutputGuardrail._anonymize_pii_with_regex(text)
-            anonymized = anonymizer.anonymize(text=text, analyzer_results=results)
+            anonymized = anonymizer.anonymize(
+                text=text,
+                analyzer_results=cast(Any, results),
+            )
             return str(anonymized.text)
         except Exception:
             return OutputGuardrail._anonymize_pii_with_regex(text)

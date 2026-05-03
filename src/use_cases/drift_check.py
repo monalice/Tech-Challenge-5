@@ -114,8 +114,8 @@ def run_evidently_drift_report(
             from evidently.metric_preset import DataDriftPreset  # noqa: PLC0415
             from evidently.report import Report  # noqa: PLC0415
         except ImportError:
-            from evidently import Report  # type: ignore[no-redef]  # noqa: PLC0415
-            from evidently.presets import DataDriftPreset  # type: ignore[no-redef]  # noqa: PLC0415
+            from evidently import Report  # noqa: PLC0415
+            from evidently.presets import DataDriftPreset  # noqa: PLC0415
 
         def _make_evidently_report() -> Any:
             try:

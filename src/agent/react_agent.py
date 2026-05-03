@@ -26,7 +26,7 @@ from langchain_aws import ChatBedrock
 
 try:
     from langfuse.callback import (
-        CallbackHandler as LangfuseHandler,  # type: ignore[import-not-found]
+        CallbackHandler as LangfuseHandler,
     )
 
     _LANGFUSE_AVAILABLE = True
@@ -192,9 +192,10 @@ def create_agent_llm() -> LLMPort:
     if top_k is not None:
         model_kwargs["top_k"] = top_k
 
+    chat_bedrock_cls = cast(Any, ChatBedrock)
     return cast(
         LLMPort,
-        ChatBedrock(
+        chat_bedrock_cls(
             model_id=DEFAULT_AGENT_LLM_MODEL,
             region_name=bedrock_region,
             model_kwargs=model_kwargs,
@@ -226,29 +227,31 @@ def _make_tools(artifacts: LoadedArtifacts, inference_service: InferenceService)
             return "Modelo não disponível. Os artefatos ainda não foram carregados."
 
         try:
-            result = inference_service.predict(SUPPORTED_TICKER, use_partial_candle=False)
-            forecast_for_ts = result.last_observed_ts + pd.Timedelta(hours=1)
+            inference_result = inference_service.predict(SUPPORTED_TICKER, use_partial_candle=False)
+            forecast_for_ts = inference_result.last_observed_ts + pd.Timedelta(hours=1)
             forecast_close_ts = forecast_for_ts + pd.Timedelta(hours=1) - pd.Timedelta(seconds=1)
 
             confidence_info = ""
-            if result.confidence_interval is not None:
+            if inference_result.confidence_interval is not None:
                 confidence_info = (
                     " | IC 95%: "
-                    f"[{result.confidence_interval.low_usd:,.2f} – "
-                    f"{result.confidence_interval.high_usd:,.2f}] USD"
+                    f"[{inference_result.confidence_interval.low_usd:,.2f} – "
+                    f"{inference_result.confidence_interval.high_usd:,.2f}] USD"
                 )
-            elif result.estimated_error_pct is not None:
-                confidence_info = f" | erro estimado: {float(result.estimated_error_pct):.2f}%"
+            elif inference_result.estimated_error_pct is not None:
+                confidence_info = (
+                    f" | erro estimado: {float(inference_result.estimated_error_pct):.2f}%"
+                )
 
-            result = (
+            message = (
                 f"Previsão BTC-USD para {timestamp_to_brt_iso(forecast_for_ts)} (BRT): "
-                f"**USD {result.predicted_price_usd:,.2f}**{confidence_info}\n"
-                f"Último candle usado: {timestamp_to_brt_iso(result.last_observed_ts)} (BRT)\n"
+                f"**USD {inference_result.predicted_price_usd:,.2f}**{confidence_info}\n"
+                f"Último candle usado: {timestamp_to_brt_iso(inference_result.last_observed_ts)} (BRT)\n"
                 f"Fechamento previsto até: {timestamp_to_brt_iso(forecast_close_ts)} (BRT)\n"
-                f"Fonte de dados: {result.data_source}"
+                f"Fonte de dados: {inference_result.data_source}"
             )
-            logger.info("[agent:previsao_bitcoin] %s", result)
-            return result
+            logger.info("[agent:previsao_bitcoin] %s", message)
+            return message
         except (DataServiceError, InsufficientDataError) as exc:
             logger.warning("[agent:previsao_bitcoin] falha de domínio: %s", exc)
             return str(exc)
