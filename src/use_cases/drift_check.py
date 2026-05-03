@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import shlex
-import subprocess
+
+# Uso intencional para disparar retreinamento com shell=False.
+import subprocess  # nosec B404
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -427,7 +429,8 @@ def _trigger_retraining(
     """
     args = shlex.split(command)
     try:
-        completed = subprocess.run(
+        # Comando controlado pela configuração interna e executado sem shell.
+        completed = subprocess.run(  # nosec B603
             args,
             check=False,
             capture_output=True,

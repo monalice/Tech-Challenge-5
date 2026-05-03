@@ -1,4 +1,5 @@
 import logging
+import os
 
 import joblib  # noqa: F401 — exposto para monkeypatch em tests: app_module.joblib
 import uvicorn
@@ -78,4 +79,6 @@ app.include_router(chat.router)
 app.include_router(admin.router)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn_host = os.getenv("UVICORN_HOST", "127.0.0.1")
+    uvicorn_port = int(os.getenv("UVICORN_PORT", "8000"))
+    uvicorn.run(app, host=uvicorn_host, port=uvicorn_port)
