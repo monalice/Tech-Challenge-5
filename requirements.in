@@ -28,6 +28,7 @@ langfuse
 pandera
 httpx
 apscheduler
+psycopg2-binary
 
 # opentelemetry-proto>=1.28 requires protobuf>=5, which conflicts with
 # tensorflow 2.x (requires protobuf<5). This upper bound is mandatory.
