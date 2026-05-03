@@ -57,7 +57,7 @@ jobs:
 
           echo "Credenciais DVC detectadas. Executando dvc pull antes dos testes..."
           pip install dvc[s3]
-          if ! dvc pull; then
+          if ! dvc pull --force; then
             echo "dvc pull falhou; seguindo com fallback determinístico de testes."
           fi
 

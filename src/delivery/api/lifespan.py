@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import joblib
 from fastapi import FastAPI
 
 from src.adapters.ml.model_loader import load_trained_model
@@ -43,13 +44,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     validate_bedrock_configuration_for_startup()
     logger.info("Carregando modelo LSTM Hourly e scaler...")
     try:
-        _model = load_trained_model(
-            MODEL_PATH, 
-            s3_bucket=S3_MODELS_BUCKET if S3_MODELS_BUCKET else None
-        )
-        _scaler = s3_manager.load_joblib(SCALER_PATH.split("/")[-1])
+        _model = load_trained_model(MODEL_PATH)
+        if S3_MODELS_BUCKET and s3_manager.s3_enabled:
+            _scaler = s3_manager.load_joblib(SCALER_PATH.split("/")[-1])
+        else:
+            _scaler = joblib.load(SCALER_PATH)
         _scaler_return = (
-            s3_manager.load_joblib(SCALER_RETURN_PATH.split("/")[-1])
+            (
+                s3_manager.load_joblib(SCALER_RETURN_PATH.split("/")[-1])
+                if S3_MODELS_BUCKET and s3_manager.s3_enabled
+                else joblib.load(SCALER_RETURN_PATH)
+            )
             if _try_load_optional_scaler(SCALER_RETURN_PATH)
             else None
         )
