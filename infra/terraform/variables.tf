@@ -46,12 +46,6 @@ variable "db_allocated_storage" {
   default     = 20
 }
 
-variable "google_api_key" {
-  description = "Google AI Studio API key stored in Secrets Manager"
-  type        = string
-  sensitive   = true
-}
-
 variable "container_port" {
   description = "Application container port"
   type        = number

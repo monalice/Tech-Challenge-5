@@ -58,11 +58,6 @@ output "llm_error_rate_alarm_name" {
   value       = aws_cloudwatch_metric_alarm.llm_error_rate_high.alarm_name
 }
 
-output "google_secret_arn" {
-  description = "Secrets Manager ARN for GOOGLE_API_KEY"
-  value       = aws_secretsmanager_secret.google_api_key.arn
-}
-
 output "db_password_secret_arn" {
   description = "Secrets Manager ARN for DB password"
   value       = aws_secretsmanager_secret.db_password.arn

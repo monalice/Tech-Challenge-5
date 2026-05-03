@@ -88,10 +88,6 @@ resource "aws_ecs_task_definition" "app" {
 
       secrets = [
         {
-          name      = "GOOGLE_API_KEY"
-          valueFrom = aws_secretsmanager_secret.google_api_key.arn
-        },
-        {
           name      = "DB_PASSWORD"
           valueFrom = aws_secretsmanager_secret.db_password.arn
         }

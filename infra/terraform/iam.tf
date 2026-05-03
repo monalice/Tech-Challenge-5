@@ -38,7 +38,6 @@ data "aws_iam_policy_document" "ecs_execution_secrets" {
     ]
 
     resources = [
-      aws_secretsmanager_secret.google_api_key.arn,
       aws_secretsmanager_secret.db_password.arn
     ]
   }

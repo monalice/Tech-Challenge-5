@@ -106,7 +106,7 @@ def _resolve_agent_temperature() -> float:
     Returns:
         Temperatura como float; padrão ``0.0`` quando não configurada.
     """
-    value = _get_env_optional_float("AGENT_LLM_TEMPERATURE", "GEMINI_TEMPERATURE")
+    value = _get_env_optional_float("AGENT_LLM_TEMPERATURE")
     return value if value is not None else 0.0
 
 
@@ -116,7 +116,7 @@ def _resolve_agent_top_p() -> float | None:
     Returns:
         Valor de top-p como float, ou ``None`` quando não configurado.
     """
-    return _get_env_optional_float("AGENT_LLM_TOP_P", "GEMINI_TOP_P")
+    return _get_env_optional_float("AGENT_LLM_TOP_P")
 
 
 def _resolve_agent_top_k() -> int | None:
@@ -125,7 +125,7 @@ def _resolve_agent_top_k() -> int | None:
     Returns:
         Valor de top-k como int, ou ``None`` quando não configurado.
     """
-    return _get_env_optional_int("AGENT_LLM_TOP_K", "GEMINI_TOP_K")
+    return _get_env_optional_int("AGENT_LLM_TOP_K")
 
 
 def _resolve_agent_verbose() -> bool:

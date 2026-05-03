@@ -20,11 +20,11 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
-from typing import Any
+from typing import Any, cast
 
 import requests
 from langchain.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_aws import ChatBedrock
 from pydantic import BaseModel, Field
 
 LOGGER = logging.getLogger("evaluation.llm_judge")
@@ -32,7 +32,7 @@ CONTEXT_SPLIT_PATTERN = re.compile(r"\[Contexto\s+\d+\]\s*", re.IGNORECASE)
 DEFAULT_OUTPUT_PATH = Path("evaluation/llm_judge_results.json")
 DEFAULT_VERSIONED_OUTPUT_DIR = Path("evaluation/results/llm_judge")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_JUDGE_MODEL = "gemini-2.5-flash"
+DEFAULT_JUDGE_MODEL = "anthropic.claude-haiku-4-5-20251001-v1:0"
 DEFAULT_JUDGE_TEMPERATURE = 0.0
 RESULT_SCHEMA_VERSION = "1.0"
 TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9à-ÿÀ-Ÿ_]+", re.UNICODE)
@@ -103,20 +103,28 @@ def _get_env_optional_int(primary_key: str, fallback_key: str | None = None) -> 
 
 
 def _resolve_judge_model() -> str:
-    return os.getenv("LLM_JUDGE_MODEL") or os.getenv("GEMINI_LLM_MODEL") or DEFAULT_JUDGE_MODEL
+    return os.getenv("LLM_JUDGE_MODEL") or os.getenv("BEDROCK_MODEL_ID") or DEFAULT_JUDGE_MODEL
 
 
 def _resolve_judge_temperature() -> float:
-    value = _get_env_optional_float("LLM_JUDGE_TEMPERATURE", "GEMINI_TEMPERATURE")
+    value = _get_env_optional_float("LLM_JUDGE_TEMPERATURE")
     return value if value is not None else DEFAULT_JUDGE_TEMPERATURE
 
 
 def _resolve_judge_top_p() -> float | None:
-    return _get_env_optional_float("LLM_JUDGE_TOP_P", "GEMINI_TOP_P")
+    return _get_env_optional_float("LLM_JUDGE_TOP_P")
 
 
 def _resolve_judge_top_k() -> int | None:
-    return _get_env_optional_int("LLM_JUDGE_TOP_K", "GEMINI_TOP_K")
+    return _get_env_optional_int("LLM_JUDGE_TOP_K")
+
+
+def _resolve_bedrock_region() -> str | None:
+    return (
+        os.getenv("BEDROCK_AWS_REGION")
+        or os.getenv("AWS_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+    )
 
 
 def _safe_filename_component(value: str) -> str:
@@ -403,13 +411,25 @@ Resposta candidata:
         ]
     )
 
-    llm_kwargs: dict[str, Any] = {"model": model_name, "temperature": temperature}
-    if top_p is not None:
-        llm_kwargs["top_p"] = top_p
-    if top_k is not None:
-        llm_kwargs["top_k"] = top_k
+    region_name = _resolve_bedrock_region()
+    if not region_name:
+        raise OSError(
+            "Região AWS para Bedrock ausente. Defina BEDROCK_AWS_REGION, "
+            "AWS_REGION ou AWS_DEFAULT_REGION."
+        )
 
-    llm = ChatGoogleGenerativeAI(**llm_kwargs)
+    model_kwargs: dict[str, Any] = {"temperature": temperature}
+    if top_p is not None:
+        model_kwargs["top_p"] = top_p
+    if top_k is not None:
+        model_kwargs["top_k"] = top_k
+
+    chat_bedrock_cls = cast(Any, ChatBedrock)
+    llm = chat_bedrock_cls(
+        model_id=model_name,
+        region_name=region_name,
+        model_kwargs=model_kwargs,
+    )
     return prompt | llm.with_structured_output(JudgeVerdict)
 
 
@@ -573,7 +593,7 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--model", default=_resolve_judge_model(), help="Modelo Gemini usado como juiz."
+        "--model", default=_resolve_judge_model(), help="Modelo Bedrock usado como juiz."
     )
     parser.add_argument(
         "--temperature",
@@ -618,11 +638,11 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _ensure_google_api_key() -> None:
-    if not os.getenv("GOOGLE_API_KEY"):
+def _ensure_bedrock_configuration() -> None:
+    if not _resolve_bedrock_region():
         raise OSError(
-            "GOOGLE_API_KEY nao esta definida. Configure a chave antes de "
-            "executar o avaliador LLM-as-judge."
+            "Região AWS para Bedrock ausente. Configure BEDROCK_AWS_REGION, AWS_REGION "
+            "ou AWS_DEFAULT_REGION antes de executar o avaliador LLM-as-judge."
         )
 
 
@@ -630,7 +650,7 @@ def main() -> int:
     _configure_logging()
     _load_dotenv_file(PROJECT_ROOT / ".env")
     args = _parse_args()
-    _ensure_google_api_key()
+    _ensure_bedrock_configuration()
 
     result = evaluate_with_llm_judge(
         golden_set_path=args.golden_set,

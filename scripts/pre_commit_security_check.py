@@ -31,10 +31,6 @@ FORBIDDEN_FILE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 
 FORBIDDEN_CONTENT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
-        re.compile(r"AIza[0-9A-Za-z_-]{20,}"),
-        "Possivel GOOGLE_API_KEY detectada",
-    ),
-    (
         re.compile(r"AKIA[0-9A-Z]{16}"),
         "Possivel AWS Access Key ID detectada",
     ),

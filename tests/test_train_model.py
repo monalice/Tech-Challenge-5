@@ -550,6 +550,7 @@ def test_ensure_directories_creates_models_folder(monkeypatch):
 
 def test_configure_mlflow_validates_tracking_uri(monkeypatch):
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    monkeypatch.setattr(tm, "MLFLOW_ARTIFACT_URI", "s3://mlflow-artifacts/btc-hourly-forecast")
 
     with pytest.raises(OSError, match="MLFLOW_TRACKING_URI"):
         tm.configure_mlflow()
@@ -560,13 +561,37 @@ def test_configure_mlflow_validates_tracking_uri(monkeypatch):
         tm.configure_mlflow()
 
 
-def test_configure_mlflow_creates_experiment_when_missing(monkeypatch):
+def test_configure_mlflow_requires_artifact_uri_and_s3_prefix(monkeypatch):
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 
-    fake_client = SimpleNamespace(get_experiment_by_name=lambda name: None)
-    monkeypatch.setattr(tm.mlflow, "MlflowClient", lambda: fake_client)
+    monkeypatch.setattr(tm, "MLFLOW_ARTIFACT_URI", None)
+    with pytest.raises(OSError, match="MLFLOW_ARTIFACT_URI não foi definida"):
+        tm.configure_mlflow()
 
-    calls = {"set_uri": None, "created": None, "set_experiment": None}
+    monkeypatch.setattr(tm, "MLFLOW_ARTIFACT_URI", "file:///tmp/artifacts")
+    with pytest.raises(OSError, match="Use um caminho S3"):
+        tm.configure_mlflow()
+
+
+def test_configure_mlflow_creates_experiment_when_missing(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    monkeypatch.setattr(tm, "MLFLOW_ARTIFACT_URI", "s3://mlflow-artifacts/btc-hourly-forecast")
+
+    calls = {
+        "get_experiment_calls": 0,
+        "set_uri": None,
+        "created": None,
+        "set_experiment": None,
+    }
+
+    def _get_experiment_by_name(_name: str):
+        calls["get_experiment_calls"] += 1
+        if calls["get_experiment_calls"] == 1:
+            return None
+        return SimpleNamespace(artifact_location="s3://mlflow-artifacts/btc-hourly-forecast")
+
+    fake_client = SimpleNamespace(get_experiment_by_name=_get_experiment_by_name)
+    monkeypatch.setattr(tm.mlflow, "MlflowClient", lambda: fake_client)
 
     monkeypatch.setattr(
         tm.mlflow, "set_tracking_uri", lambda uri: calls.__setitem__("set_uri", uri)
@@ -587,8 +612,27 @@ def test_configure_mlflow_creates_experiment_when_missing(monkeypatch):
     tm.configure_mlflow()
 
     assert calls["set_uri"] == "http://mlflow:5000"
-    assert calls["created"][0] == tm.MLFLOW_EXPERIMENT_NAME
+    assert calls["created"] == (
+        tm.MLFLOW_EXPERIMENT_NAME,
+        "s3://mlflow-artifacts/btc-hourly-forecast",
+    )
     assert calls["set_experiment"] == tm.MLFLOW_EXPERIMENT_NAME
+    assert calls["get_experiment_calls"] == 2
+
+
+def test_configure_mlflow_fails_when_experiment_artifact_location_is_not_s3(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    monkeypatch.setattr(tm, "MLFLOW_ARTIFACT_URI", "s3://mlflow-artifacts/btc-hourly-forecast")
+
+    fake_client = SimpleNamespace(
+        get_experiment_by_name=lambda name: SimpleNamespace(artifact_location="file:///tmp/mlruns")
+    )
+    monkeypatch.setattr(tm.mlflow, "MlflowClient", lambda: fake_client)
+    monkeypatch.setattr(tm.mlflow, "set_tracking_uri", lambda uri: None)
+    monkeypatch.setattr(tm.mlflow, "set_experiment", lambda experiment_name: None)
+
+    with pytest.raises(OSError, match="artifact_location do experimento MLflow"):
+        tm.configure_mlflow()
 
 
 def test_promote_to_production_marks_old_champion_and_updates_alias(monkeypatch):
