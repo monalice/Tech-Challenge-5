@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 from sklearn.dummy import DummyRegressor
 
-
 pytestmark = pytest.mark.mlflow_integration
 
 

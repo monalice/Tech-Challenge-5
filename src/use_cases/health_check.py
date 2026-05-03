@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import HTTPException
 import numpy as np
 import pandas as pd
 import psutil
+from fastapi import HTTPException
 
 from src.domain.constants import LOOKBACK, SUPPORTED_TICKER
 from src.domain.ports import LoadedArtifacts

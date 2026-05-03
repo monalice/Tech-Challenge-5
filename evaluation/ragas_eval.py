@@ -109,7 +109,11 @@ def _resolve_ragas_llm_model() -> str:
 
 
 def _resolve_ragas_embedding_model() -> str:
-    return os.getenv("RAGAS_EMBEDDING_MODEL") or os.getenv("BEDROCK_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
+    return (
+        os.getenv("RAGAS_EMBEDDING_MODEL")
+        or os.getenv("BEDROCK_EMBEDDING_MODEL")
+        or DEFAULT_EMBEDDING_MODEL
+    )
 
 
 def _resolve_ragas_temperature() -> float:
@@ -148,7 +152,9 @@ def _safe_overlap_ratio(numerator_tokens: set[str], denominator_tokens: set[str]
     return float(len(numerator_tokens & denominator_tokens) / len(denominator_tokens))
 
 
-def _compute_offline_metrics(records: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, dict[str, int]]]:
+def _compute_offline_metrics(
+    records: list[dict[str, Any]],
+) -> tuple[dict[str, float], dict[str, dict[str, int]]]:
     per_metric_values: dict[str, list[float]] = {name: [] for name in METRIC_NAMES}
 
     for record in records:
@@ -162,7 +168,9 @@ def _compute_offline_metrics(records: list[dict[str, Any]]) -> tuple[dict[str, f
 
         # Approximation for semantic groundedness with deterministic lexical overlap.
         faithfulness_score = _safe_overlap_ratio(answer_tokens, context_tokens)
-        answer_relevancy_score = _safe_overlap_ratio(answer_tokens, question_tokens | ground_truth_tokens)
+        answer_relevancy_score = _safe_overlap_ratio(
+            answer_tokens, question_tokens | ground_truth_tokens
+        )
         context_precision_score = _safe_overlap_ratio(context_tokens, ground_truth_tokens)
         context_recall_score = _safe_overlap_ratio(ground_truth_tokens, context_tokens)
 
@@ -208,7 +216,9 @@ def _extract_question(item: dict[str, Any], index: int) -> str:
 
 
 def _extract_ground_truth(item: dict[str, Any], index: int) -> str:
-    ground_truth = item.get("ground_truth") or item.get("expected_answer") or item.get("reference_answer")
+    ground_truth = (
+        item.get("ground_truth") or item.get("expected_answer") or item.get("reference_answer")
+    )
     if not ground_truth:
         raise ValueError(f"Item {index} sem 'expected_answer' ou 'ground_truth'.")
     return " ".join(str(ground_truth).split())
@@ -234,7 +244,9 @@ def _resolve_chat_url(api_url: str) -> str:
     return f"{normalized}/chat"
 
 
-def _fetch_chat_response(api_url: str, question: str, timeout_seconds: int) -> tuple[str, list[str], dict[str, Any]]:
+def _fetch_chat_response(
+    api_url: str, question: str, timeout_seconds: int
+) -> tuple[str, list[str], dict[str, Any]]:
     response = requests.post(
         _resolve_chat_url(api_url),
         json={"message": question},
@@ -285,18 +297,24 @@ def _materialize_records(
         raw_payload: dict[str, Any] = {}
 
         if (not answer or not contexts) and api_url:
-            LOGGER.info("Gerando resposta do item %d/%d via endpoint de chat...", index, len(golden_set))
-            answer, fetched_contexts, raw_payload = _fetch_chat_response(api_url, question, timeout_seconds)
+            LOGGER.info(
+                "Gerando resposta do item %d/%d via endpoint de chat...", index, len(golden_set)
+            )
+            answer, fetched_contexts, raw_payload = _fetch_chat_response(
+                api_url, question, timeout_seconds
+            )
             if fetched_contexts:
                 contexts = fetched_contexts
 
         if not answer:
             raise ValueError(
-                f"Item {index} sem resposta gerada. Inclua 'answer' no JSON ou use --api-url para gerar respostas."
+                f"Item {index} sem resposta gerada. Inclua 'answer' no JSON "
+                "ou use --api-url para gerar respostas."
             )
         if not contexts:
             raise ValueError(
-                f"Item {index} sem contextos recuperados. Inclua 'contexts' no JSON ou use --api-url com um agente que exponha passos do RAG."
+                f"Item {index} sem contextos recuperados. Inclua 'contexts' no JSON "
+                "ou use --api-url com um agente que exponha passos do RAG."
             )
 
         record = {
@@ -328,7 +346,9 @@ def _coerce_metric_value(raw_value: Any) -> float:
     return float(raw_value)
 
 
-def _aggregate_metric_values(raw_values: list[Any], metric_name: str) -> tuple[float, dict[str, int]]:
+def _aggregate_metric_values(
+    raw_values: list[Any], metric_name: str
+) -> tuple[float, dict[str, int]]:
     finite_values: list[float] = []
     invalid_count = 0
     for value in raw_values:
@@ -391,7 +411,9 @@ def _validate_aggregated_metrics(metrics: dict[str, float]) -> None:
 def _write_json_atomic(output_path: Path, payload: dict[str, Any]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = output_path.with_suffix(f"{output_path.suffix}.tmp")
-    temp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    temp_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8"
+    )
     temp_path.replace(output_path)
 
 
@@ -409,7 +431,7 @@ def _build_bedrock_clients(
     llm_model: str,
     embedding_model: str,
     region_name: str,
-) -> tuple["ChatBedrock", "BedrockEmbeddings"]:
+) -> tuple[ChatBedrock, BedrockEmbeddings]:
     from langchain_aws import BedrockEmbeddings, ChatBedrock
 
     llm_kwargs: dict[str, Any] = {
@@ -500,17 +522,19 @@ def evaluate_golden_set(
             _validate_aggregated_metrics(metrics)
     else:
         if strict_ragas and not enable_live_ragas:
-            raise EnvironmentError(
-                "A avaliacao RAGAS com LLM foi desabilitada por padrao para evitar consumo acidental de cota. "
-                "Use --enable-live-ragas junto com --strict-ragas para executar chamadas reais ao Amazon Bedrock."
+            raise OSError(
+                "A avaliacao RAGAS com LLM foi desabilitada por padrao para "
+                "evitar consumo acidental de cota. Use --enable-live-ragas "
+                "junto com --strict-ragas para executar chamadas reais ao Amazon Bedrock."
             )
         if strict_ragas:
-            raise EnvironmentError(
+            raise OSError(
                 "BEDROCK_AWS_REGION/AWS_REGION nao esta definida e --strict-ragas foi habilitado."
             )
         backend = "deterministic_offline_fallback"
         LOGGER.warning(
-            "Avaliacao RAGAS online desabilitada ou regiao AWS ausente. Usando fallback deterministico para gerar metricas validas."
+            "Avaliacao RAGAS online desabilitada ou regiao AWS ausente. "
+            "Usando fallback deterministico para gerar metricas validas."
         )
         metrics, diagnostics = _compute_offline_metrics(records)
         _validate_aggregated_metrics(metrics)
@@ -533,32 +557,51 @@ def evaluate_golden_set(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Avalia um golden set com RAGAS usando faithfulness, answer_relevancy, context_precision e context_recall.",
+        description=(
+            "Avalia um golden set com RAGAS usando faithfulness, "
+            "answer_relevancy, context_precision e context_recall."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--golden-set", required=True, type=Path, help="Caminho para o golden set JSON.")
+    parser.add_argument(
+        "--golden-set", required=True, type=Path, help="Caminho para o golden set JSON."
+    )
     parser.add_argument(
         "--api-url",
         default=None,
-        help="URL base da API FastAPI. O script chamara POST /chat quando answer/contexts nao estiverem no JSON.",
+        help=(
+            "URL base da API FastAPI. O script chamara POST /chat quando "
+            "answer/contexts nao estiverem no JSON."
+        ),
     )
-    parser.add_argument("--timeout", type=int, default=60, help="Timeout de chamada HTTP em segundos.")
+    parser.add_argument(
+        "--timeout", type=int, default=60, help="Timeout de chamada HTTP em segundos."
+    )
     parser.add_argument(
         "--expected-questions",
         type=int,
         default=DEFAULT_EXPECTED_QUESTIONS,
         help="Quantidade esperada de exemplos no golden set para execucao reprodutivel.",
     )
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Seed para reproducibilidade.")
+    parser.add_argument(
+        "--seed", type=int, default=DEFAULT_SEED, help="Seed para reproducibilidade."
+    )
     parser.add_argument(
         "--enable-live-ragas",
         action="store_true",
-        help="Habilita chamadas reais ao Amazon Bedrock para calcular metricas RAGAS. Sem este flag, o script usa fallback deterministico para evitar consumo acidental de cota.",
+        help=(
+            "Habilita chamadas reais ao Amazon Bedrock para calcular metricas "
+            "RAGAS. Sem este flag, o script usa fallback deterministico para "
+            "evitar consumo acidental de cota."
+        ),
     )
     parser.add_argument(
         "--strict-ragas",
         action="store_true",
-        help="Falha a execucao se a avaliacao RAGAS online nao puder ser executada. Requer --enable-live-ragas.",
+        help=(
+            "Falha a execucao se a avaliacao RAGAS online nao puder ser "
+            "executada. Requer --enable-live-ragas."
+        ),
     )
     parser.add_argument(
         "--output",

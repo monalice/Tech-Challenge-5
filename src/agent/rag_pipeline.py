@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from functools import lru_cache
-import os
 from pathlib import Path
 from typing import Any, Literal
 
 from langchain_aws import BedrockEmbeddings
 from langchain_core.documents import Document
+
 from src.agent.llm_config import resolve_aws_region
 
 DEFAULT_EMBEDDING_MODEL = os.getenv(

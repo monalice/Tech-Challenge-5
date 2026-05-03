@@ -53,7 +53,9 @@ class _StaticMarketDataPort:
 
 class _BlockingInputGuardrail:
     def validate(self, text: str):
-        return SimpleNamespace(allowed=False, reason="prompt injection detectado", sanitized_text=None)
+        return SimpleNamespace(
+            allowed=False, reason="prompt injection detectado", sanitized_text=None
+        )
 
 
 class _PassInputGuardrail:
@@ -110,9 +112,7 @@ def test_download_market_data_uses_binance_fallback(monkeypatch):
         raise ValueError("yf down")
 
     monkeypatch.setattr(market_data.YFinanceSource, "fetch", _yf_raises)
-    monkeypatch.setattr(
-        market_data.BinanceSource, "fetch", lambda self, ticker: _mock_market_df()
-    )
+    monkeypatch.setattr(market_data.BinanceSource, "fetch", lambda self, ticker: _mock_market_df())
 
     df, source = react_agent._download_market_data("BTC-USD")
 
@@ -174,7 +174,9 @@ def test_tools_execute_with_mocks_and_return_expected_sections(monkeypatch):
         "_download_market_data",
         lambda ticker: (_mock_market_df(), "mock"),
     )
-    monkeypatch.setattr(react_agent, "get_crypto_news_vector_store", lambda backend="chroma": object())
+    monkeypatch.setattr(
+        react_agent, "get_crypto_news_vector_store", lambda backend="chroma": object()
+    )
     monkeypatch.setattr(
         react_agent,
         "similarity_search",
@@ -263,7 +265,9 @@ def test_build_agent_reads_verbose_from_environment(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(react_agent, "AgentExecutor", _CapturingExecutor)
 
-    react_agent.build_agent(_loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM())
+    react_agent.build_agent(
+        _loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM()
+    )
 
     assert captured["verbose"] is False
 
@@ -278,7 +282,9 @@ def test_agent_response_can_combine_forecast_with_rag_context(monkeypatch):
         "_download_market_data",
         lambda ticker: (_mock_market_df(), "mock"),
     )
-    monkeypatch.setattr(react_agent, "get_crypto_news_vector_store", lambda backend="chroma": object())
+    monkeypatch.setattr(
+        react_agent, "get_crypto_news_vector_store", lambda backend="chroma": object()
+    )
     monkeypatch.setattr(
         react_agent,
         "similarity_search",
@@ -384,7 +390,9 @@ def test_build_agent_raises_value_error_when_fewer_than_three_tools(
 
     # Act & Assert
     with pytest.raises(ValueError, match="3 tools"):
-        react_agent.build_agent(_loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM())
+        react_agent.build_agent(
+            _loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM()
+        )
 
 
 def test_build_agent_raises_value_error_when_zero_tools(
@@ -400,7 +408,9 @@ def test_build_agent_raises_value_error_when_zero_tools(
 
     # Act & Assert
     with pytest.raises(ValueError):
-        react_agent.build_agent(_loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM())
+        react_agent.build_agent(
+            _loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM()
+        )
 
 
 def test_build_agent_instantiates_executor_with_exactly_three_tools(
@@ -439,7 +449,9 @@ def test_build_agent_instantiates_executor_with_exactly_three_tools(
     monkeypatch.setattr(react_agent, "AgentExecutor", _CapturingExecutor)
 
     # Act
-    react_agent.build_agent(_loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM())
+    react_agent.build_agent(
+        _loaded_artifacts(), _inference_service(_loaded_artifacts()), _DummyLLM()
+    )
 
     # Assert
     assert len(captured["tools"]) == 3, (

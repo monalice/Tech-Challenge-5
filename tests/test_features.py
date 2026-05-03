@@ -207,6 +207,4 @@ def test_row_count_preserved(sample_data: pd.DataFrame) -> None:
     result = build_feature_matrix(sample_data)
 
     # Apenas 1 linha descartada: o NaN inicial de log_return = np.log(close).diff()
-    assert len(result) >= n_input - 1, (
-        f"Esperado >= {n_input - 1} linhas, obtido {len(result)}"
-    )
+    assert len(result) >= n_input - 1, f"Esperado >= {n_input - 1} linhas, obtido {len(result)}"

@@ -2,16 +2,9 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import tempfile
 import time
-from pathlib import Path
 from typing import Any
-
-# Garante import absoluto de 'src' mesmo quando executado por caminho relativo.
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 import joblib
 import mlflow
@@ -20,13 +13,13 @@ import numpy as np
 import pandas as pd
 import pandera.pandas as pa
 import requests
-import yaml  # type: ignore[import-untyped]
-from numpy.typing import NDArray
 
 # IMPORTANTE (Windows): tensorflow e yfinance devem ser importados antes de pandas
 # para evitar conflito de DLL que causa crash (exit code -1073741819)
 import tensorflow as tf
+import yaml  # type: ignore[import-untyped]
 import yfinance as yf
+from numpy.typing import NDArray
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import MinMaxScaler
@@ -41,14 +34,12 @@ from src.domain.constants import (
     BINANCE_SYMBOL,
     BINANCE_TIMEOUT_SECONDS,
     LOOKBACK,
-    MODEL_META_PATH,
-    MODEL_PATH,
-    SCALER_PATH,
-    SCALER_RETURN_PATH,
     TICKER,
 )
 from src.domain.features.technical_features import (
     FEATURE_COLUMNS,
+)
+from src.domain.features.technical_features import (
     build_feature_matrix as _build_feature_matrix,
 )
 
@@ -116,8 +107,7 @@ RAW_DATA_SCHEMA = pa.DataFrameSchema(  # type: ignore[no-untyped-call]
     checks=[
         pa.Check(lambda df: (df["High"] >= df["Low"]).all(), error="High deve ser >= Low."),
         pa.Check(
-            lambda df: ((df["Close"] >= df["Low"]) & (df["Close"] <= df["High"]))
-            .all(),
+            lambda df: ((df["Close"] >= df["Low"]) & (df["Close"] <= df["High"])).all(),
             error="Close deve estar entre Low e High.",
         ),
     ],
@@ -161,7 +151,9 @@ def validate_temporal_consistency(index: pd.Index, expected_frequency: str = "1h
     if not inconsistent_steps.empty:
         raise ValueError(
             "Consistência temporal inválida: frequência horária irregular detectada. "
-            f"Esperado: {expected_delta}, encontrados {inconsistent_steps.nunique()} intervalos distintos."
+            "Esperado: "
+            f"{expected_delta}, encontrados {inconsistent_steps.nunique()} "
+            "intervalos distintos."
         )
 
 
@@ -225,9 +217,7 @@ def validate_mlflow_metadata_tags(tags: dict[str, Any], context: str) -> dict[st
 
     metrics_payload = validated["metrics"]
     if not isinstance(metrics_payload, dict):
-        raise ValueError(
-            f"Schema de metadata MLflow inválido ({context}): metrics deve ser dict."
-        )
+        raise ValueError(f"Schema de metadata MLflow inválido ({context}): metrics deve ser dict.")
 
     for metric_name, metric_value in metrics_payload.items():
         if not isinstance(metric_name, str) or metric_name.strip() == "":
@@ -284,11 +274,14 @@ def validate_required_training_metadata(
     ]
     if missing_tags:
         raise ValueError(
-            "Metadados obrigatórios ausentes para a função de treino: "
-            f"{', '.join(missing_tags)}"
+            f"Metadados obrigatórios ausentes para a função de treino: {', '.join(missing_tags)}"
         )
 
-    return {key: str(value).strip() for key, value in required_metadata_tags.items() if value is not None}
+    return {
+        key: str(value).strip()
+        for key, value in required_metadata_tags.items()
+        if value is not None
+    }
 
 
 def get_git_sha() -> str:
@@ -308,9 +301,7 @@ def get_git_sha() -> str:
 def get_git_sha_required() -> str:
     git_sha = get_git_sha()
     if git_sha == "unknown":
-        raise RuntimeError(
-            "Falha ao capturar git SHA para lineage imutavel de dados/modelo."
-        )
+        raise RuntimeError("Falha ao capturar git SHA para lineage imutavel de dados/modelo.")
     return git_sha
 
 
@@ -329,9 +320,7 @@ def _get_dvc_output_hash(dataset_path: str, dvc_lock_path: str = DVC_LOCK_PATH) 
 
     stages = lock_data.get("stages")
     if not isinstance(stages, dict):
-        raise RuntimeError(
-            "Estrutura invalida em dvc.lock: campo 'stages' ausente ou invalido."
-        )
+        raise RuntimeError("Estrutura invalida em dvc.lock: campo 'stages' ausente ou invalido.")
 
     normalized_dataset_path = _normalize_repo_path(dataset_path)
     for stage_data in stages.values():
@@ -353,9 +342,7 @@ def _get_dvc_output_hash(dataset_path: str, dvc_lock_path: str = DVC_LOCK_PATH) 
 
             hash_name = out.get("hash")
             if not isinstance(hash_name, str):
-                raise RuntimeError(
-                    f"Output '{out_path}' em dvc.lock sem campo 'hash' valido."
-                )
+                raise RuntimeError(f"Output '{out_path}' em dvc.lock sem campo 'hash' valido.")
 
             hash_value = out.get(hash_name)
             if not isinstance(hash_value, str) or not hash_value.strip():
@@ -514,7 +501,9 @@ def promote_to_production(registered_model_version: str) -> None:
     """Promove challenger via alias champion e marca o champion anterior como arquivado."""
     client = mlflow.MlflowClient()
     previous_champion = resolve_champion_version(client=client)
-    if previous_champion is not None and str(previous_champion.version) != str(registered_model_version):
+    if previous_champion is not None and str(previous_champion.version) != str(
+        registered_model_version
+    ):
         client.set_model_version_tag(
             name=MLFLOW_MODEL_NAME,
             version=previous_champion.version,
@@ -527,7 +516,10 @@ def promote_to_production(registered_model_version: str) -> None:
             key="champion_replaced_by",
             value=str(registered_model_version),
         )
-        logger.info("Champion anterior marcado como arquivado (versao %s).", previous_champion.version)
+        logger.info(
+            "Champion anterior marcado como arquivado (versao %s).",
+            previous_champion.version,
+        )
 
     client.set_registered_model_alias(
         name=MLFLOW_MODEL_NAME,

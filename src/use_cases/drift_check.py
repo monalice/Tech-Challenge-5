@@ -111,8 +111,8 @@ def run_evidently_drift_report(
 
     try:
         try:
-            from evidently.report import Report  # noqa: PLC0415
             from evidently.metric_preset import DataDriftPreset  # noqa: PLC0415
+            from evidently.report import Report  # noqa: PLC0415
         except ImportError:
             from evidently import Report  # type: ignore[no-redef]  # noqa: PLC0415
             from evidently.presets import DataDriftPreset  # type: ignore[no-redef]  # noqa: PLC0415
@@ -218,7 +218,7 @@ class DriftAutomationConfig:
     def from_sources(
         cls,
         config_path: str = "configs/monitoring_config.yaml",
-    ) -> "DriftAutomationConfig":
+    ) -> DriftAutomationConfig:
         warning = 0.1
         retrain = 0.2
         interval = 24
@@ -233,27 +233,21 @@ class DriftAutomationConfig:
             retrain = float(drift_cfg.get("psi_retrain_threshold", retrain))
             interval = int(drift_cfg.get("check_interval_hours", interval))
         except Exception:
-            logger.info("Arquivo de monitoramento indisponível. Usando defaults para automação de drift.")
+            logger.info(
+                "Arquivo de monitoramento indisponível. Usando defaults para automação de drift."
+            )
 
         return cls(
-            psi_warning_threshold=float(
-                os.getenv("DRIFT_WARNING_THRESHOLD", str(warning))
-            ),
-            psi_retrain_threshold=float(
-                os.getenv("DRIFT_RETRAIN_THRESHOLD", str(retrain))
-            ),
-            check_interval_hours=int(
-                os.getenv("DRIFT_CHECK_INTERVAL_HOURS", str(interval))
-            ),
+            psi_warning_threshold=float(os.getenv("DRIFT_WARNING_THRESHOLD", str(warning))),
+            psi_retrain_threshold=float(os.getenv("DRIFT_RETRAIN_THRESHOLD", str(retrain))),
+            check_interval_hours=int(os.getenv("DRIFT_CHECK_INTERVAL_HOURS", str(interval))),
             alert_webhook_url=os.getenv("DRIFT_ALERT_WEBHOOK_URL") or None,
             retrain_enabled=cls._to_bool(os.getenv("DRIFT_RETRAIN_ENABLED"), default=False),
             retrain_command=os.getenv(
                 "DRIFT_RETRAIN_COMMAND",
                 "python -u training/train_model.py",
             ),
-            retrain_timeout_seconds=int(
-                os.getenv("DRIFT_RETRAIN_TIMEOUT_SECONDS", "900")
-            ),
+            retrain_timeout_seconds=int(os.getenv("DRIFT_RETRAIN_TIMEOUT_SECONDS", "900")),
             mlflow_tracking_uri=os.getenv(
                 "SERVING_MLFLOW_TRACKING_URI",
                 os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"),
@@ -318,7 +312,9 @@ def _configure_mlflow_serving_context(config: DriftAutomationConfig, *, mlflow_m
     if not config.mlflow_tracking_uri.strip():
         raise RuntimeError("SERVING_MLFLOW_TRACKING_URI/MLFLOW_TRACKING_URI ausente para serving.")
     if not config.mlflow_experiment_name.strip():
-        raise RuntimeError("SERVING_MLFLOW_EXPERIMENT_NAME/MLFLOW_EXPERIMENT_NAME ausente para serving.")
+        raise RuntimeError(
+            "SERVING_MLFLOW_EXPERIMENT_NAME/MLFLOW_EXPERIMENT_NAME ausente para serving."
+        )
 
     mlflow_module.set_tracking_uri(config.mlflow_tracking_uri)
     mlflow_module.set_experiment(config.mlflow_experiment_name)
@@ -342,9 +338,13 @@ def _log_drift_to_mlflow_with_policy(
             with mlflow_module.start_run(run_name="drift_automation", nested=True):
                 mlflow_module.log_metric("psi_btc_usd", psi)
                 mlflow_module.log_metric("psi_data_drift", float(drift_result.get("psi_data", psi)))
-                mlflow_module.log_metric("psi_prediction_drift", float(drift_result.get("psi_prediction", psi)))
+                mlflow_module.log_metric(
+                    "psi_prediction_drift", float(drift_result.get("psi_prediction", psi))
+                )
                 mlflow_module.log_metric("drift_share", float(drift_result.get("drift_share", 0.0)))
-                mlflow_module.set_tag("used_evidently", str(drift_result.get("used_evidently", False)).lower())
+                mlflow_module.set_tag(
+                    "used_evidently", str(drift_result.get("used_evidently", False)).lower()
+                )
                 mlflow_module.set_tag("drift_action", action)
                 mlflow_module.set_tag("alert_sent", str(alert_sent).lower())
                 mlflow_module.set_tag(
@@ -368,7 +368,9 @@ def _log_drift_to_mlflow_with_policy(
                 tracking_uri=config.mlflow_tracking_uri,
                 experiment_name=config.mlflow_experiment_name,
             )
-            logger.error("Erro estruturado de MLflow no serving: %s", json.dumps(last_error_payload))
+            logger.error(
+                "Erro estruturado de MLflow no serving: %s", json.dumps(last_error_payload)
+            )
 
             if attempt < config.mlflow_retry_attempts:
                 backoff_seconds = config.mlflow_retry_backoff_seconds * (2 ** (attempt - 1))

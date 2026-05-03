@@ -4,6 +4,7 @@ Define os Protocols que desacoplam a camada de domínio das implementações con
 de infraestrutura (fontes de mercado, LLMs) e a dataclass tipada que carrega os
 artefatos de ML em memória.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -33,9 +34,7 @@ class MarketDataPort(Protocol):
 class LLMPort(Protocol):
     """Contrato para executores de LLM (agentes ReAct, chains, etc.)."""
 
-    def invoke(
-        self, input: dict[str, Any], config: Any = None, **kwargs: Any
-    ) -> dict[str, Any]:
+    def invoke(self, input: dict[str, Any], config: Any = None, **kwargs: Any) -> dict[str, Any]:
         """Executa o LLM com a entrada fornecida.
 
         Args:

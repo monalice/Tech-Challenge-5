@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger("stockcast.llm_config")
@@ -190,7 +190,7 @@ def publish_cloudwatch_llm_metrics(*, latency_ms: float, is_error: bool) -> None
         {"Name": "Endpoint", "Value": "/chat"},
     ]
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     metric_data: list[dict[str, Any]] = [
         {
             "MetricName": "llm_latency",

@@ -8,6 +8,7 @@ Contém:
     - :func:`estimate_uncertainty` — cálculo puro de MAPE/RMSE → IC.
     - :class:`InferenceService` — orquestra coleta → features → modelo → inversão → IC.
 """
+
 from __future__ import annotations
 
 import logging
@@ -18,9 +19,9 @@ import numpy as np
 import pandas as pd
 
 from src.domain.constants import LOOKBACK, Z_SCORE_95_CONFIDENCE
+from src.domain.features.technical_features import build_feature_matrix
 from src.domain.ports import LoadedArtifacts, MarketDataPort
 from src.domain.time_utils import remove_incomplete_hour_candle
-from src.domain.features.technical_features import build_feature_matrix
 
 logger = logging.getLogger("stockcast.inference")
 
@@ -184,8 +185,7 @@ class InferenceService:
             # ----------------------------------------------------------------
             if not {"High", "Low", "Volume"}.issubset(df.columns):
                 raise DataServiceError(
-                    "Dados de mercado sem colunas OHLCV necessárias "
-                    "para inferência multi-feature."
+                    "Dados de mercado sem colunas OHLCV necessárias para inferência multi-feature."
                 )
             ohlcv = df[["Close", "High", "Low", "Volume"]].dropna()
             ohlcv = ohlcv.loc[close_series.index]
@@ -205,9 +205,7 @@ class InferenceService:
 
             if scaler_return is not None:
                 predicted_log_return = float(
-                    scaler_return.inverse_transform(
-                        predicted_scaled.reshape(-1, 1)
-                    ).reshape(-1)[0]
+                    scaler_return.inverse_transform(predicted_scaled.reshape(-1, 1)).reshape(-1)[0]
                 )
             else:
                 # Fallback: inverter via scaler_all usando feature 0 (log_return)
@@ -227,9 +225,7 @@ class InferenceService:
             # ----------------------------------------------------------------
             # Caminho single-feature (log_return apenas — modelo legado)
             # ----------------------------------------------------------------
-            log_price_series = pd.Series(
-                np.log(close_series.values), index=close_series.index
-            )
+            log_price_series = pd.Series(np.log(close_series.values), index=close_series.index)
             return_series = log_price_series.diff().dropna()
 
             if len(return_series) < LOOKBACK:
@@ -245,9 +241,7 @@ class InferenceService:
             x_input = scaled_input.reshape(1, LOOKBACK, 1)
 
             predicted_scaled = model.predict(x_input, verbose=0)
-            predicted_log_return = float(
-                scaler.inverse_transform(predicted_scaled).reshape(-1)[0]
-            )
+            predicted_log_return = float(scaler.inverse_transform(predicted_scaled).reshape(-1)[0])
             last_close = float(close_series.iloc[-1])
             last_observed_ts = pd.Timestamp(close_series.index[-1])
 

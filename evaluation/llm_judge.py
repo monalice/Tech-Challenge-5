@@ -134,7 +134,9 @@ def _normalize_contexts(raw_contexts: Any) -> list[str]:
         if not cleaned:
             return []
         if "[Contexto" in cleaned:
-            return [chunk.strip() for chunk in CONTEXT_SPLIT_PATTERN.split(cleaned) if chunk.strip()]
+            return [
+                chunk.strip() for chunk in CONTEXT_SPLIT_PATTERN.split(cleaned) if chunk.strip()
+            ]
         return [cleaned]
     raise TypeError("contexts deve ser string, lista de strings ou null.")
 
@@ -176,7 +178,9 @@ def _build_fallback_verdict(
     clarity_ratio = _safe_overlap_ratio(candidate_tokens, question_tokens | reference_tokens)
 
     if candidate_tokens:
-        supported = len(candidate_tokens & (reference_tokens | context_tokens)) / len(candidate_tokens)
+        supported = len(candidate_tokens & (reference_tokens | context_tokens)) / len(
+            candidate_tokens
+        )
     else:
         supported = 0.0
 
@@ -227,9 +231,13 @@ def _extract_question(item: dict[str, Any], index: int) -> str:
 
 
 def _extract_reference_answer(item: dict[str, Any], index: int) -> str:
-    reference_answer = item.get("expected_answer") or item.get("ground_truth") or item.get("reference_answer")
+    reference_answer = (
+        item.get("expected_answer") or item.get("ground_truth") or item.get("reference_answer")
+    )
     if not reference_answer:
-        raise ValueError(f"Item {index} sem resposta de referencia ('expected_answer' ou 'ground_truth').")
+        raise ValueError(
+            f"Item {index} sem resposta de referencia ('expected_answer' ou 'ground_truth')."
+        )
     return str(reference_answer).strip()
 
 
@@ -275,7 +283,9 @@ def _extract_contexts_from_steps(steps: Any) -> list[str]:
     return unique_contexts
 
 
-def _fetch_chat_response(api_url: str, question: str, timeout_seconds: int) -> tuple[str, list[str], dict[str, Any]]:
+def _fetch_chat_response(
+    api_url: str, question: str, timeout_seconds: int
+) -> tuple[str, list[str], dict[str, Any]]:
     response = requests.post(
         _resolve_chat_url(api_url),
         json={"message": question},
@@ -303,8 +313,12 @@ def _materialize_records(
         raw_payload: dict[str, Any] = {}
 
         if not answer and api_url:
-            LOGGER.info("Gerando resposta do item %d/%d via endpoint de chat...", index, len(golden_set))
-            answer, fetched_contexts, raw_payload = _fetch_chat_response(api_url, question, timeout_seconds)
+            LOGGER.info(
+                "Gerando resposta do item %d/%d via endpoint de chat...", index, len(golden_set)
+            )
+            answer, fetched_contexts, raw_payload = _fetch_chat_response(
+                api_url, question, timeout_seconds
+            )
             if fetched_contexts and not contexts:
                 contexts = fetched_contexts
 
@@ -340,18 +354,28 @@ def _build_judge_chain(
 Voce e um avaliador senior de sistemas de IA para analise e previsao do Bitcoin.
 
 Avalie a resposta candidata usando apenas estes criterios:
-1. precisao_financeira: fidelidade tecnica sobre preco do BTC, direcao esperada, magnitude, horizonte temporal, riscos, incerteza, volatilidade e implicacoes financeiras.
-2. clareza: objetividade, organizacao, legibilidade e capacidade de responder diretamente a pergunta sobre a previsao do BTC.
-3. ausencia_alucinacoes: ausencia de afirmacoes nao suportadas pela resposta de referencia ou pelos contextos fornecidos, especialmente numeros, eventos de mercado, causalidades ou certezas indevidas.
+1. precisao_financeira: fidelidade tecnica sobre preco do BTC, direcao
+esperada, magnitude, horizonte temporal, riscos, incerteza, volatilidade
+e implicacoes financeiras.
+2. clareza: objetividade, organizacao, legibilidade e capacidade de
+responder diretamente a pergunta sobre a previsao do BTC.
+3. ausencia_alucinacoes: ausencia de afirmacoes nao suportadas pela
+resposta de referencia ou pelos contextos fornecidos, especialmente
+numeros, eventos de mercado, causalidades ou certezas indevidas.
 
 Regras obrigatorias:
 - Dê score inteiro de 1 a 5 para cada criterio.
 - Use a resposta de referencia como baseline principal.
 - Use os contextos apenas como evidencia adicional.
-- Considere negativamente previsoes sem horizonte temporal claro, sem sinalizacao de risco ou com excesso de certeza para um ativo volatil como BTC.
-- Considere positivamente respostas que explicam premissas, limitacoes do modelo e cenarios alternativos quando isso estiver alinhado com a referencia.
+- Considere negativamente previsoes sem horizonte temporal claro, sem
+    sinalizacao de risco ou com excesso de certeza para um ativo volatil
+    como BTC.
+- Considere positivamente respostas que explicam premissas, limitacoes do
+    modelo e cenarios alternativos quando isso estiver alinhado com a
+    referencia.
 - Penalize afirmacoes categoricas sem suporte.
-- A nota_final deve ficar entre 0 e 10 e refletir a media ponderada: 40% precisao_financeira, 30% clareza, 30% ausencia_alucinacoes.
+- A nota_final deve ficar entre 0 e 10 e refletir a media ponderada:
+    40% precisao_financeira, 30% clareza, 30% ausencia_alucinacoes.
 - Responda no schema estruturado solicitado.
                 """.strip(),
             ),
@@ -363,7 +387,8 @@ Pergunta do usuario:
 
 Contexto da tarefa:
 Julgue uma resposta de um agente que responde perguntas sobre previsoes do Bitcoin.
-Verifique se a resposta candidata permanece fiel a referencia e aos contextos ao falar de preco, tendencia, horizonte, risco e justificativas.
+Verifique se a resposta candidata permanece fiel a referencia e aos contextos
+ao falar de preco, tendencia, horizonte, risco e justificativas.
 
 Resposta de referencia:
 {reference_answer}
@@ -430,11 +455,14 @@ def evaluate_with_llm_judge(
     golden_set = _load_golden_set(golden_set_path)
     if len(golden_set) < min_questions:
         raise ValueError(
-            f"Golden set invalido: esperado pelo menos {min_questions} perguntas, encontrado {len(golden_set)}."
+            "Golden set invalido: esperado pelo menos "
+            f"{min_questions} perguntas, encontrado {len(golden_set)}."
         )
 
     records = _materialize_records(golden_set, api_url, timeout_seconds)
-    judge_chain = _build_judge_chain(model_name=model_name, temperature=temperature, top_p=top_p, top_k=top_k)
+    judge_chain = _build_judge_chain(
+        model_name=model_name, temperature=temperature, top_p=top_p, top_k=top_k
+    )
 
     judged_records: list[dict[str, Any]] = []
     financial_scores: list[int] = []
@@ -462,14 +490,17 @@ def evaluate_with_llm_judge(
                         "question": record["question"],
                         "reference_answer": record["reference_answer"],
                         "candidate_answer": record["candidate_answer"],
-                        "contexts": "\n\n".join(record["contexts"]) if record["contexts"] else "Sem contexto adicional.",
+                        "contexts": "\n\n".join(record["contexts"])
+                        if record["contexts"]
+                        else "Sem contexto adicional.",
                     }
                 )
             except Exception as error:
                 if strict_judge:
                     raise
                 LOGGER.warning(
-                    "Falha no backend LLM no item %d/%d (%s). Ativando fallback deterministico para este e os proximos itens.",
+                    "Falha no backend LLM no item %d/%d (%s). "
+                    "Ativando fallback deterministico para este e os proximos itens.",
                     index,
                     len(records),
                     error,
@@ -530,23 +561,38 @@ def _parse_args() -> argparse.Namespace:
         description="Avalia respostas com LLM-as-judge usando LangChain.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--golden-set", required=True, type=Path, help="Caminho para o golden set JSON.")
+    parser.add_argument(
+        "--golden-set", required=True, type=Path, help="Caminho para o golden set JSON."
+    )
     parser.add_argument(
         "--api-url",
         default=None,
-        help="URL base da API FastAPI. O script chamara POST /chat quando answer nao estiver no JSON.",
+        help=(
+            "URL base da API FastAPI. O script chamara POST /chat "
+            "quando answer nao estiver no JSON."
+        ),
     )
-    parser.add_argument("--model", default=_resolve_judge_model(), help="Modelo Gemini usado como juiz.")
+    parser.add_argument(
+        "--model", default=_resolve_judge_model(), help="Modelo Gemini usado como juiz."
+    )
     parser.add_argument(
         "--temperature",
         type=float,
         default=_resolve_judge_temperature(),
         help="Temperatura do LLM juiz.",
     )
-    parser.add_argument("--top-p", type=float, default=_resolve_judge_top_p(), help="Top-p do LLM juiz.")
-    parser.add_argument("--top-k", type=int, default=_resolve_judge_top_k(), help="Top-k do LLM juiz.")
-    parser.add_argument("--timeout", type=int, default=60, help="Timeout de chamada HTTP em segundos.")
-    parser.add_argument("--min-questions", type=int, default=20, help="Quantidade minima de exemplos no golden set.")
+    parser.add_argument(
+        "--top-p", type=float, default=_resolve_judge_top_p(), help="Top-p do LLM juiz."
+    )
+    parser.add_argument(
+        "--top-k", type=int, default=_resolve_judge_top_k(), help="Top-k do LLM juiz."
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=60, help="Timeout de chamada HTTP em segundos."
+    )
+    parser.add_argument(
+        "--min-questions", type=int, default=20, help="Quantidade minima de exemplos no golden set."
+    )
     parser.add_argument(
         "--strict-judge",
         action="store_true",
@@ -574,8 +620,9 @@ def _parse_args() -> argparse.Namespace:
 
 def _ensure_google_api_key() -> None:
     if not os.getenv("GOOGLE_API_KEY"):
-        raise EnvironmentError(
-            "GOOGLE_API_KEY nao esta definida. Configure a chave antes de executar o avaliador LLM-as-judge."
+        raise OSError(
+            "GOOGLE_API_KEY nao esta definida. Configure a chave antes de "
+            "executar o avaliador LLM-as-judge."
         )
 
 

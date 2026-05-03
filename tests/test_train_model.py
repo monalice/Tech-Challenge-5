@@ -11,6 +11,11 @@ import pytest
 from training import train_model as tm
 
 
+def _dump_text_file(_obj: object, path: str) -> None:
+    with open(path, "w", encoding="utf-8") as file:
+        file.write("x")
+
+
 class _FakeResponse:
     def __init__(self, payload: list[list[object]]) -> None:
         self._payload = payload
@@ -251,7 +256,9 @@ def test_evaluate_champion_challenger_compares_mae(monkeypatch):
 
 def test_evaluate_champion_challenger_returns_false_on_client_error(monkeypatch):
     fake_client = SimpleNamespace(
-        get_model_version_by_alias=lambda name, alias: (_ for _ in ()).throw(RuntimeError("mlflow down"))
+        get_model_version_by_alias=lambda name, alias: (_ for _ in ()).throw(
+            RuntimeError("mlflow down")
+        )
     )
     monkeypatch.setattr(tm.mlflow, "MlflowClient", lambda: fake_client)
 
@@ -385,9 +392,15 @@ def test_main_sets_mlflow_tags_and_params_before_pipeline(monkeypatch):
         lambda: SimpleNamespace(info=SimpleNamespace(run_id="run-main-test")),
     )
     monkeypatch.setattr(tm.mlflow, "set_tags", lambda tags: captured.setdefault("tags", tags))
-    monkeypatch.setattr(tm.mlflow, "set_tag", lambda key, value: captured_runtime_tags.__setitem__(key, value))
-    monkeypatch.setattr(tm.mlflow, "log_params", lambda params: captured.setdefault("params", params))
-    monkeypatch.setattr(tm.mlflow, "log_metric", lambda key, value: captured_metrics.__setitem__(key, value))
+    monkeypatch.setattr(
+        tm.mlflow, "set_tag", lambda key, value: captured_runtime_tags.__setitem__(key, value)
+    )
+    monkeypatch.setattr(
+        tm.mlflow, "log_params", lambda params: captured.setdefault("params", params)
+    )
+    monkeypatch.setattr(
+        tm.mlflow, "log_metric", lambda key, value: captured_metrics.__setitem__(key, value)
+    )
     monkeypatch.setattr(tm.mlflow, "log_artifact", lambda file_path, artifact_path=None: None)
     monkeypatch.setattr(
         tm,
@@ -422,7 +435,10 @@ def test_main_sets_mlflow_tags_and_params_before_pipeline(monkeypatch):
     assert params["dvc_data_rev"] == "sha-main-test"
     assert params["dvc_data_hash"] == "abc123dvc"
     assert captured_runtime_tags["fairness_artifact_status"] == "missing"
-    assert captured_runtime_tags["fairness_alert"] == "missing_fairness_artifact:evaluation/fairness_report.json"
+    assert (
+        captured_runtime_tags["fairness_alert"]
+        == "missing_fairness_artifact:evaluation/fairness_report.json"
+    )
     assert captured_metrics["fairness_artifact_present"] == 0.0
 
 
@@ -552,11 +568,15 @@ def test_configure_mlflow_creates_experiment_when_missing(monkeypatch):
 
     calls = {"set_uri": None, "created": None, "set_experiment": None}
 
-    monkeypatch.setattr(tm.mlflow, "set_tracking_uri", lambda uri: calls.__setitem__("set_uri", uri))
+    monkeypatch.setattr(
+        tm.mlflow, "set_tracking_uri", lambda uri: calls.__setitem__("set_uri", uri)
+    )
     monkeypatch.setattr(
         tm.mlflow,
         "create_experiment",
-        lambda name, artifact_location=None: calls.__setitem__("created", (name, artifact_location)),
+        lambda name, artifact_location=None: calls.__setitem__(
+            "created", (name, artifact_location)
+        ),
     )
     monkeypatch.setattr(
         tm.mlflow,
@@ -603,7 +623,7 @@ def test_archive_challenger_sets_candidate_alias(monkeypatch):
         ),
         set_model_version_tag=lambda name, version, key, value: version_tags.append(
             (name, str(version), key, value)
-        )
+        ),
     )
     monkeypatch.setattr(tm.mlflow, "MlflowClient", lambda: fake_client)
 
@@ -788,10 +808,10 @@ def test_model_name_single_source_used_in_tags_registry_and_champion(monkeypatch
     # 2) Champion-challenger: consulta ao Registry deve usar o mesmo nome.
     queried_model_name_alias_pairs: list[tuple[str, str]] = []
     fake_client_for_champion = SimpleNamespace(
-        get_model_version_by_alias=lambda name, alias: queried_model_name_alias_pairs.append(
-            (name, alias)
+        get_model_version_by_alias=lambda name, alias: (
+            queried_model_name_alias_pairs.append((name, alias))
+            or (_ for _ in ()).throw(RuntimeError("alias not found"))
         )
-        or (_ for _ in ()).throw(RuntimeError("alias not found"))
     )
     monkeypatch.setattr(tm.mlflow, "MlflowClient", lambda: fake_client_for_champion)
 
@@ -806,7 +826,7 @@ def test_model_name_single_source_used_in_tags_registry_and_champion(monkeypatch
             with open(path, "w", encoding="utf-8") as f:
                 f.write("model")
 
-    monkeypatch.setattr(tm.joblib, "dump", lambda obj, path: open(path, "w", encoding="utf-8").write("x"))
+    monkeypatch.setattr(tm.joblib, "dump", _dump_text_file)
     monkeypatch.setattr(tm.mlflow.keras, "log_model", lambda model, artifact_path: None)
     monkeypatch.setattr(tm.mlflow, "log_artifact", lambda file_path, artifact_path: None)
     monkeypatch.setattr(
@@ -814,6 +834,7 @@ def test_model_name_single_source_used_in_tags_registry_and_champion(monkeypatch
         "active_run",
         lambda: SimpleNamespace(info=SimpleNamespace(run_id="run-xyz")),
     )
+
     def _register_model_spy(model_uri, name, tags):  # noqa: ARG001
         captured_register_name["name"] = name
         return SimpleNamespace(name=name, version="1")
@@ -842,7 +863,7 @@ def test_log_training_artifacts_registers_model(monkeypatch):
                 f.write("model")
 
     artifacts: list[tuple[str, str]] = []
-    monkeypatch.setattr(tm.joblib, "dump", lambda obj, path: open(path, "w", encoding="utf-8").write("x"))
+    monkeypatch.setattr(tm.joblib, "dump", _dump_text_file)
     monkeypatch.setattr(tm.mlflow.keras, "log_model", lambda model, artifact_path: None)
     monkeypatch.setattr(
         tm.mlflow,
@@ -895,7 +916,7 @@ def test_log_training_artifacts_fails_when_required_metadata_is_missing(monkeypa
             with open(path, "w", encoding="utf-8") as f:
                 f.write("model")
 
-    monkeypatch.setattr(tm.joblib, "dump", lambda obj, path: open(path, "w", encoding="utf-8").write("x"))
+    monkeypatch.setattr(tm.joblib, "dump", _dump_text_file)
     monkeypatch.setattr(tm.mlflow.keras, "log_model", lambda model, artifact_path: None)
     monkeypatch.setattr(tm.mlflow, "log_artifact", lambda file_path, artifact_path: None)
     monkeypatch.setattr(
@@ -1143,25 +1164,29 @@ def test_main_logs_required_mlflow_tags_and_params(monkeypatch: pytest.MonkeyPat
     start_run_called: list[bool] = []
 
     class _FakeRun:
-        class info:
+        class Info:
             run_id = "fake-run-id"
 
+        info = Info()
+
     class _FakeRunContext:
-        def __enter__(self) -> "_FakeRunContext":
+        def __enter__(self) -> _FakeRunContext:
             return self
 
         def __exit__(self, *args: object) -> None:
             return None
 
     class _FakeActiveRun:
-        class info:
+        class Info:
             run_id = "fake-run-id"
+
+        info = Info()
 
     class _FakeScaler:
         data_min_ = np.array([0.0])
         data_max_ = np.array([1.0])
 
-        def fit(self, X: np.ndarray) -> "_FakeScaler":
+        def fit(self, X: np.ndarray) -> _FakeScaler:
             return self
 
         def fit_transform(self, X: np.ndarray) -> np.ndarray:
@@ -1238,7 +1263,9 @@ def test_main_logs_required_mlflow_tags_and_params(monkeypatch: pytest.MonkeyPat
     tm.main()
 
     # Assert — MLflow foi invocado e tags obrigatórias foram registadas
-    assert start_run_called, "set_required_tags_on_active_run deve ter sido chamado dentro de start_run"
+    assert start_run_called, (
+        "set_required_tags_on_active_run deve ter sido chamado dentro de start_run"
+    )
     assert "model_name" in logged_tags or logged_params, (
         "model_name deve estar presente nas tags ou params registados no MLflow"
     )
@@ -1267,21 +1294,23 @@ def test_main_temporal_split_proportions(monkeypatch: pytest.MonkeyPatch) -> Non
     logged_metrics: dict[str, float] = {}
 
     class _FakeRunContext:
-        def __enter__(self) -> "_FakeRunContext":
+        def __enter__(self) -> _FakeRunContext:
             return self
 
         def __exit__(self, *args: object) -> None:
             return None
 
     class _FakeActiveRun:
-        class info:
+        class Info:
             run_id = "fake-run-id"
+
+        info = Info()
 
     class _FakeScaler:
         data_min_ = np.array([0.0])
         data_max_ = np.array([1.0])
 
-        def fit(self, X: np.ndarray) -> "_FakeScaler":
+        def fit(self, X: np.ndarray) -> _FakeScaler:
             return self
 
         def fit_transform(self, X: np.ndarray) -> np.ndarray:
@@ -1353,6 +1382,4 @@ def test_main_temporal_split_proportions(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert total > 0, "Total de linhas deve ser > 0"
     train_pct = train_rows / total
-    assert 0.75 <= train_pct <= 0.85, (
-        f"Proporção de treino esperada ≈ 80%, obtida {train_pct:.1%}"
-    )
+    assert 0.75 <= train_pct <= 0.85, f"Proporção de treino esperada ≈ 80%, obtida {train_pct:.1%}"

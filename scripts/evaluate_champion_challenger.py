@@ -186,8 +186,7 @@ def _load_holdout_dataset(path: str, target_column: str) -> tuple[pd.DataFrame, 
     holdout_df = pd.read_csv(path)
     if target_column not in holdout_df.columns:
         raise RuntimeError(
-            f"Coluna alvo '{target_column}' ausente no holdout. "
-            f"Colunas: {list(holdout_df.columns)}"
+            f"Coluna alvo '{target_column}' ausente no holdout. Colunas: {list(holdout_df.columns)}"
         )
 
     y_true = holdout_df[target_column].to_numpy()
@@ -314,10 +313,12 @@ def main() -> int:
         champion_version: str | None = None
         champion_run_id: str | None = None
         try:
-            champion_model, champion_version, champion_run_id = download_champion_model_from_registry(
-                mlflow_module=mlflow_module,
-                model_name=MLFLOW_MODEL_NAME,
-                production_alias=PRODUCTION_ALIAS,
+            champion_model, champion_version, champion_run_id = (
+                download_champion_model_from_registry(
+                    mlflow_module=mlflow_module,
+                    model_name=MLFLOW_MODEL_NAME,
+                    production_alias=PRODUCTION_ALIAS,
+                )
             )
             champion_scores = _predict_scores(champion_model, X_holdout)
             champion_auc = float(roc_auc_score(y_holdout, champion_scores))
@@ -343,8 +344,7 @@ def main() -> int:
             return EXIT_PROMOTED
 
         reason = (
-            f"quality_gate_failed delta_auc={delta_auc:.6f} "
-            f"< min_required={MIN_IMPROVEMENT:.6f}"
+            f"quality_gate_failed delta_auc={delta_auc:.6f} < min_required={MIN_IMPROVEMENT:.6f}"
         )
         _mark_rejected(client, challenger_version, reason)
         logger.info(

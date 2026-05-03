@@ -72,7 +72,9 @@ def test_write_json_atomic_rejects_nan(tmp_path: Path) -> None:
         reval._write_json_atomic(output, {"metrics": {"faithfulness": float("nan")}})
 
 
-def test_load_dotenv_file_sets_variables_without_overwriting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_dotenv_file_sets_variables_without_overwriting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
         "BEDROCK_AWS_REGION=us-east-1\nOTHER_KEY='abc'\n# COMMENT\n",

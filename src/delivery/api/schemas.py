@@ -24,10 +24,7 @@ class PredictionResponse(BaseModel):
     ticker: str = Field(description="Ticker previsto")
     prediction_type: str = Field(description="Tipo de previsão")
     input_mode: str = Field(
-        description=(
-            "Modo de entrada usado: closed_candles_only "
-            "ou include_partial_candle"
-        )
+        description=("Modo de entrada usado: closed_candles_only ou include_partial_candle")
     )
     last_input_candle_utc: str = Field(
         description="Último candle usado como entrada em UTC (ISO-8601)"
@@ -39,12 +36,8 @@ class PredictionResponse(BaseModel):
         description="Preço previsto para o fechamento da próxima hora"
     )
     forecast_for_utc: str = Field(description="Início da hora prevista em UTC (ISO-8601)")
-    forecast_for_brt: str = Field(
-        description="Início da hora prevista em Brasília (ISO-8601)"
-    )
-    forecast_close_utc: str = Field(
-        description="Fechamento da hora prevista em UTC (ISO-8601)"
-    )
+    forecast_for_brt: str = Field(description="Início da hora prevista em Brasília (ISO-8601)")
+    forecast_close_utc: str = Field(description="Fechamento da hora prevista em UTC (ISO-8601)")
     forecast_close_brt: str = Field(
         description="Fechamento da hora prevista em Brasília (ISO-8601)"
     )
@@ -56,9 +49,7 @@ class PredictionResponse(BaseModel):
         default=None,
         description="Erro percentual estimado com base nas métricas do modelo",
     )
-    data_source: str = Field(
-        description="Fonte dos dados de mercado usada: yfinance ou binance"
-    )
+    data_source: str = Field(description="Fonte dos dados de mercado usada: yfinance ou binance")
     processing_time_ms: float = Field(
         description="Tempo de processamento da requisição em milissegundos"
     )
@@ -68,10 +59,7 @@ class HealthResponse(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     status: str = Field(
-        description=(
-            "healthy quando todos os checks passam; "
-            "caso contrário degraded"
-        )
+        description=("healthy quando todos os checks passam; caso contrário degraded")
     )
     artifacts_ready: bool = Field(description="Modelo e scaler carregados")
     model_usable: bool = Field(description="Modelo responde a uma inferência de sanidade")
@@ -119,17 +107,12 @@ class PredictionHistoryResponse(BaseModel):
 
     total_logged: int = Field(description="Total de previsões armazenadas no histórico")
     predictions: list[PredictionLogEntry] = Field(
-        description=(
-            "Últimas previsões realizadas "
-            "(mais recente primeiro)"
-        )
+        description=("Últimas previsões realizadas (mais recente primeiro)")
     )
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(
-        description="Pergunta ou instrução em linguagem natural para o agente LLM"
-    )
+    message: str = Field(description="Pergunta ou instrução em linguagem natural para o agente LLM")
 
 
 class AgentStepResponse(BaseModel):

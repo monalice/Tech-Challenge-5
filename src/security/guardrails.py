@@ -1,6 +1,6 @@
-from dataclasses import dataclass
 import os
 import re
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -11,6 +11,7 @@ def resolve_aws_region() -> str | None:
         or os.getenv("AWS_REGION")
         or os.getenv("AWS_DEFAULT_REGION")
     )
+
 
 try:
     import boto3  # type: ignore[import-not-found]
@@ -63,7 +64,8 @@ class _BedrockGuardrailBase:
                 )
             if boto3 is None:
                 raise RuntimeError(
-                    "boto3 não está instalado. Adicione a dependência antes de usar Amazon Bedrock Guardrails."
+                    "boto3 não está instalado. Adicione a dependência antes de "
+                    "usar Amazon Bedrock Guardrails."
                 )
             self._client = boto3.client("bedrock-runtime", region_name=self.region_name)
         return self._client
@@ -387,8 +389,8 @@ class OutputGuardrail(_BedrockGuardrailBase):
                 return self._anonymize_pii_with_presidio(sanitized_text)
             return self._anonymize_pii_with_presidio(
                 self._build_reason(
-                response,
-                "Conteúdo retido pelo Amazon Bedrock Guardrails.",
+                    response,
+                    "Conteúdo retido pelo Amazon Bedrock Guardrails.",
                 )
             )
 

@@ -20,29 +20,31 @@ from typing import Any, cast
 
 import pandas as pd
 from langchain.agents import AgentExecutor, create_react_agent
-from langchain_aws import ChatBedrock
 from langchain.prompts import PromptTemplate
 from langchain.tools import tool
+from langchain_aws import ChatBedrock
 
 try:
-    from langfuse.callback import CallbackHandler as LangfuseHandler  # type: ignore[import-not-found]
+    from langfuse.callback import (
+        CallbackHandler as LangfuseHandler,  # type: ignore[import-not-found]
+    )
 
     _LANGFUSE_AVAILABLE = True
 except ImportError:
     LangfuseHandler = None
     _LANGFUSE_AVAILABLE = False
 
-from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
 from src.agent.llm_config import resolve_aws_region
+from src.agent.rag_pipeline import get_crypto_news_vector_store, similarity_search
+from src.domain.constants import SUPPORTED_TICKER
 from src.domain.inference import DataServiceError, InferenceService, InsufficientDataError
 from src.domain.ports import LLMPort, LoadedArtifacts
-from src.infrastructure.market_data import BinanceSource, FallbackMarketData, YFinanceSource
-from src.security.guardrails import InputGuardrail, OutputGuardrail
-from src.domain.constants import SUPPORTED_TICKER
 from src.domain.time_utils import (
     remove_incomplete_hour_candle,
     timestamp_to_brt_iso,
 )
+from src.infrastructure.market_data import BinanceSource, FallbackMarketData, YFinanceSource
+from src.security.guardrails import InputGuardrail, OutputGuardrail
 
 logger = logging.getLogger("stockcast.agent")
 YFINANCE_MAX_RETRIES = 2
@@ -178,7 +180,8 @@ def create_agent_llm() -> LLMPort:
     bedrock_region = resolve_aws_region()
     if not bedrock_region:
         raise OSError(
-            "A região AWS para Amazon Bedrock não está definida. Use BEDROCK_AWS_REGION, AWS_REGION ou AWS_DEFAULT_REGION."
+            "A região AWS para Amazon Bedrock não está definida. Use "
+            "BEDROCK_AWS_REGION, AWS_REGION ou AWS_DEFAULT_REGION."
         )
 
     model_kwargs: dict[str, Any] = {"temperature": _resolve_agent_temperature()}

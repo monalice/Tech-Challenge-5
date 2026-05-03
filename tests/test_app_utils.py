@@ -99,7 +99,9 @@ def test_validate_bedrock_configuration_for_startup_rejects_placeholder_in_produ
         app_module.validate_bedrock_configuration_for_startup()
 
 
-def test_validate_bedrock_configuration_for_startup_rejects_invalid_format_in_production(monkeypatch):
+def test_validate_bedrock_configuration_for_startup_rejects_invalid_format_in_production(
+    monkeypatch,
+):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("AWS_REGION", "insecure-region")
 

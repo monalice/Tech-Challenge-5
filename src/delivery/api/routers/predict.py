@@ -106,9 +106,7 @@ def predict_next_hour(
 
     forecast_for_ts = result.last_observed_ts + pd.Timedelta(hours=1)
     forecast_close_ts = forecast_for_ts + pd.Timedelta(hours=1) - pd.Timedelta(seconds=1)
-    input_mode = (
-        "include_partial_candle" if request.use_partial_candle else "closed_candles_only"
-    )
+    input_mode = "include_partial_candle" if request.use_partial_candle else "closed_candles_only"
     confidence_interval_95: ConfidenceIntervalResponse | None = (
         ConfidenceIntervalResponse(
             low_usd=result.confidence_interval.low_usd,
