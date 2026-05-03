@@ -19,9 +19,17 @@ from src.delivery.api.lifespan import lifespan
 from src.delivery.api.routers import admin, chat, health, predict
 from src.domain.features.technical_features import (  # noqa: F401
     compute_bollinger_pct_b as _compute_bollinger_pct_b,
+)
+from src.domain.features.technical_features import (
     compute_macd_signal as _compute_macd_signal,
+)
+from src.domain.features.technical_features import (
     compute_rsi as _compute_rsi,
+)
+from src.domain.features.technical_features import (
     compute_sma_ratio as _compute_sma_ratio,
+)
+from src.domain.features.technical_features import (
     compute_volume_ratio as _compute_volume_ratio,
 )
 from src.domain.time_utils import (  # noqa: F401
