@@ -1,4 +1,4 @@
 [core]
     remote = s3remote
 ['remote "s3remote"']
-    url = s3://tech-challenge-5-dvc-store
+    url = s3://tech-challenge-5-trained-models
