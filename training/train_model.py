@@ -781,11 +781,15 @@ def log_training_artifacts(
                 s3_manager.save_joblib(scaler_return, "scaler_btc_return.gz")
 
                 # Salva metadata como JSON também em S3
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp_meta:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    suffix=".json",
+                    delete=False,
+                ) as tmp_meta:
                     json.dump(metadata, tmp_meta, indent=2, ensure_ascii=False)
                     tmp_meta.flush()
                     # Lê o conteúdo para salvar em S3
-                    with open(tmp_meta.name, "r", encoding="utf-8") as f:
+                    with open(tmp_meta.name, encoding="utf-8") as f:
                         meta_content = f.read()
                     # Salva via S3 usando um método customizado para JSON
                     key = f"{s3_manager.prefix}/model_metadata_btc.json"
