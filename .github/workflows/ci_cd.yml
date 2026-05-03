@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements.eval.txt
+          pip install -r requirements.eval.txt
           pip install ruff mypy bandit pytest pytest-cov
 
       - name: Optional DVC pull for test data
