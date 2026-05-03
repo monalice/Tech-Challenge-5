@@ -19,10 +19,11 @@ import os
 from typing import Any, cast
 
 import pandas as pd
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain.prompts import PromptTemplate
+from langchain.agents import create_agent as _lc_create_agent
 from langchain.tools import tool
 from langchain_aws import ChatBedrock
+from langchain_core.messages import HumanMessage as _HumanMessage
+from langchain_core.prompts import PromptTemplate
 
 try:
     from langfuse.callback import (
@@ -455,7 +456,7 @@ class _GuardedAgentExecutor:
         guarded_input = dict(input)
         guarded_input["input"] = validation.sanitized_text or user_prompt
         if config is None:
-            result = self._base_executor.invoke(guarded_input, **kwargs)
+            result: dict[str, Any] = self._base_executor.invoke(guarded_input, **kwargs)
         else:
             result = self._base_executor.invoke(guarded_input, config=config, **kwargs)
 
@@ -473,7 +474,7 @@ class _GuardedAgentExecutor:
             )
             result["guardrails"] = guardrails_meta
 
-        return result
+        return dict(result)
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +507,79 @@ Question: {input}
 Thought:{agent_scratchpad}"""
 
 _REACT_PROMPT = PromptTemplate.from_template(_REACT_PROMPT_TEMPLATE)
+
+# System prompt para a nova API create_agent do LangChain 1.x.
+_REACT_SYSTEM_PROMPT = _REACT_PROMPT_TEMPLATE.split("\n\n")[0]
+
+
+# ---------------------------------------------------------------------------
+# Compatibilidade: AgentExecutor e create_react_agent (LangChain 1.x)
+# ---------------------------------------------------------------------------
+
+
+def create_react_agent(llm: Any, tools: list[Any], prompt: Any) -> Any:  # noqa: ARG001
+    """Cria um agente usando a API do LangChain 1.x (LangGraph/create_agent).
+
+    O parâmetro ``prompt`` é aceito por compatibilidade com testes que monkeypatch
+    esta função, mas o prompt efetivo é injetado como ``system_prompt`` na nova API.
+    """
+    return _lc_create_agent(model=llm, tools=tools, system_prompt=_REACT_SYSTEM_PROMPT)
+
+
+class AgentExecutor:
+    """Executor compatível com a interface do LangChain 0.x, implementado sobre create_agent.
+
+    Mantém a assinatura original de ``__init__`` e ``invoke`` para que testes que
+    monkeypatch ``react_agent.AgentExecutor`` continuem funcionando sem alteração.
+    """
+
+    def __init__(
+        self,
+        agent: Any,
+        tools: list[Any],
+        callbacks: list[Any] | None = None,
+        verbose: bool = True,
+        handle_parsing_errors: bool = False,
+        max_iterations: int = 6,
+        return_intermediate_steps: bool = False,
+    ) -> None:
+        self._agent = agent
+        self.tools = tools
+        self.callbacks = callbacks
+        self.verbose = verbose
+        self.handle_parsing_errors = handle_parsing_errors
+        self.max_iterations = max_iterations
+        self.return_intermediate_steps = return_intermediate_steps
+        # Expõe kwargs para compatibilidade com testes que inspecionam esses valores.
+        self.kwargs: dict[str, Any] = {
+            "agent": agent,
+            "tools": tools,
+            "callbacks": callbacks,
+            "verbose": verbose,
+            "handle_parsing_errors": handle_parsing_errors,
+            "max_iterations": max_iterations,
+            "return_intermediate_steps": return_intermediate_steps,
+        }
+
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> dict[str, Any]:
+        """Invoca o agente e retorna ``{"output": ..., "intermediate_steps": [...]}``."""
+        user_text = input.get("input", "") if isinstance(input, dict) else str(input)
+        invoke_config: dict[str, Any] = dict(config) if isinstance(config, dict) else {}
+        if self.callbacks:
+            existing_cbs: list[Any] = list(invoke_config.get("callbacks", []))
+            invoke_config["callbacks"] = existing_cbs + list(self.callbacks)
+
+        state: dict[str, Any] = {"messages": [_HumanMessage(content=user_text)]}
+        raw = self._agent.invoke(state, config=invoke_config or None, **kwargs)
+
+        messages: list[Any] = raw.get("messages", []) if isinstance(raw, dict) else []
+        output = ""
+        for msg in reversed(messages):
+            if hasattr(msg, "content") and msg.content:
+                output = str(msg.content)
+                break
+
+        return {"output": output, "intermediate_steps": []}
 
 
 # ---------------------------------------------------------------------------

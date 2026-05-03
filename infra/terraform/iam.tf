@@ -140,6 +140,18 @@ data "aws_iam_policy_document" "sfn_drift_retrain" {
       aws_iam_role.ecs_task_role.arn
     ]
   }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "events:PutTargets",
+      "events:PutRule",
+      "events:DescribeRule"
+    ]
+    resources = [
+      "arn:aws:events:${var.aws_region}:${data.aws_caller_identity.current.account_id}:rule/StepFunctionsGetEventsForECSTaskRule"
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "sfn_drift_retrain" {
