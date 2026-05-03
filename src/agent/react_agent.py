@@ -243,11 +243,14 @@ def _make_tools(artifacts: LoadedArtifacts, inference_service: InferenceService)
                     f" | erro estimado: {float(inference_result.estimated_error_pct):.2f}%"
                 )
 
+            observed_ts_brt = timestamp_to_brt_iso(inference_result.last_observed_ts)
+            forecast_for_ts_brt = timestamp_to_brt_iso(forecast_for_ts)
+            forecast_close_ts_brt = timestamp_to_brt_iso(forecast_close_ts)
             message = (
-                f"Previsão BTC-USD para {timestamp_to_brt_iso(forecast_for_ts)} (BRT): "
+                f"Previsão BTC-USD para {forecast_for_ts_brt} (BRT): "
                 f"**USD {inference_result.predicted_price_usd:,.2f}**{confidence_info}\n"
-                f"Último candle usado: {timestamp_to_brt_iso(inference_result.last_observed_ts)} (BRT)\n"
-                f"Fechamento previsto até: {timestamp_to_brt_iso(forecast_close_ts)} (BRT)\n"
+                f"Último candle usado: {observed_ts_brt} (BRT)\n"
+                f"Fechamento previsto até: {forecast_close_ts_brt} (BRT)\n"
                 f"Fonte de dados: {inference_result.data_source}"
             )
             logger.info("[agent:previsao_bitcoin] %s", message)
