@@ -55,6 +55,7 @@ YFINANCE_TIMEOUT_SECONDS: int = 10
 # ---------------------------------------------------------------------------
 
 #: Caminho do modelo principal serializado (Keras).
+#: Pode ser local (models/...) ou S3 (s3://bucket/...).
 MODEL_PATH: str = "models/lstm_btc_hourly.keras"
 
 #: Caminho do scaler principal das features.
@@ -65,6 +66,18 @@ SCALER_RETURN_PATH: str = "models/scaler_btc_return.gz"
 
 #: Caminho do arquivo JSON com metadados do modelo.
 MODEL_META_PATH: str = "models/model_metadata_btc.json"
+
+# ---------------------------------------------------------------------------
+# S3 para artefatos de modelo
+# ---------------------------------------------------------------------------
+
+#: Bucket S3 para armazenar modelos treinados.
+#: Se vazio/None, o sistema usa fallback local (models/).
+#: Define via variável de ambiente S3_MODELS_BUCKET.
+S3_MODELS_BUCKET: str | None = None  # Será carregado de env() em lifespan
+
+#: Prefixo de caminho dentro do bucket S3.
+S3_MODELS_PREFIX: str = "models"
 
 # ---------------------------------------------------------------------------
 # Estatística

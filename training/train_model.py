@@ -29,6 +29,7 @@ from tensorflow.keras.layers import LSTM, Bidirectional, Dense, Dropout
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.optimizers import Adam
 
+from src.adapters.ml.s3_model_manager import S3ModelManager
 from src.domain.constants import (
     BINANCE_API_URL,
     BINANCE_SYMBOL,
@@ -45,6 +46,10 @@ from src.domain.features.technical_features import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
+
+# Gerenciador de S3 para artefatos de modelo
+S3_MODELS_BUCKET = os.getenv("S3_MODELS_BUCKET", "").strip()
+s3_manager = S3ModelManager(bucket_name=S3_MODELS_BUCKET if S3_MODELS_BUCKET else None)
 
 # Configurações
 PERIOD = "730d"
@@ -751,6 +756,7 @@ def log_training_artifacts(
         scaler_file = os.path.join(temp_dir, "scaler_btc.gz")
         scaler_return_file = os.path.join(temp_dir, "scaler_btc_return.gz")
         metadata_file = os.path.join(temp_dir, "model_metadata_btc.json")
+        model_file = os.path.join(temp_dir, "lstm_btc_hourly.keras")
 
         joblib.dump(scaler_all, scaler_file)
         joblib.dump(scaler_return, scaler_return_file)
@@ -758,10 +764,43 @@ def log_training_artifacts(
         with open(metadata_file, "w", encoding="utf-8") as meta_file:
             json.dump(metadata, meta_file, indent=2, ensure_ascii=False)
 
+        # Salva modelo também em arquivo temporário para S3
+        model.save(model_file)
+
         mlflow.keras.log_model(model, artifact_path="model")
         mlflow.log_artifact(scaler_file, artifact_path="scalers")
         mlflow.log_artifact(scaler_return_file, artifact_path="scalers")
         mlflow.log_artifact(metadata_file, artifact_path="metadata")
+
+        # Se S3 está configurado, salva também no S3 bucket
+        if S3_MODELS_BUCKET and s3_manager.s3_enabled:
+            try:
+                logger.info("Salvando artefatos no S3 bucket: %s", S3_MODELS_BUCKET)
+                s3_manager.save_model(model, "lstm_btc_hourly.keras")
+                s3_manager.save_joblib(scaler_all, "scaler_btc.gz")
+                s3_manager.save_joblib(scaler_return, "scaler_btc_return.gz")
+
+                # Salva metadata como JSON também em S3
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp_meta:
+                    json.dump(metadata, tmp_meta, indent=2, ensure_ascii=False)
+                    tmp_meta.flush()
+                    # Lê o conteúdo para salvar em S3
+                    with open(tmp_meta.name, "r", encoding="utf-8") as f:
+                        meta_content = f.read()
+                    # Salva via S3 usando um método customizado para JSON
+                    key = f"{s3_manager.prefix}/model_metadata_btc.json"
+                    s3_manager.s3_client.put_object(
+                        Bucket=S3_MODELS_BUCKET,
+                        Key=key,
+                        Body=meta_content.encode("utf-8"),
+                        ContentType="application/json",
+                    )
+                    logger.info("Metadata salva em S3: s3://%s/%s", S3_MODELS_BUCKET, key)
+                    os.unlink(tmp_meta.name)
+
+                logger.info("Todos os artefatos foram salvos em S3 com sucesso.")
+            except Exception as e:
+                logger.error("Erro ao salvar artefatos em S3 (continuando com MLflow): %s", e)
 
         active_run = mlflow.active_run()
         if active_run is None:

@@ -5,10 +5,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-import joblib
 from fastapi import FastAPI
 
 from src.adapters.ml.model_loader import load_trained_model
+from src.adapters.ml.s3_model_manager import S3ModelManager
 from src.agent.llm_config import validate_bedrock_configuration_for_startup
 from src.delivery.api.dependencies import _DownloadWithRetryPort
 from src.domain.constants import LOOKBACK, MODEL_PATH, SCALER_PATH, SUPPORTED_TICKER
@@ -20,16 +20,35 @@ logger = logging.getLogger("stockcast")
 SCALER_RETURN_PATH = "models/scaler_btc_return.gz"
 MODEL_META_PATH = "models/model_metadata_btc.json"
 
+# Configuração de S3 para modelos (via variável de ambiente)
+S3_MODELS_BUCKET = os.getenv("S3_MODELS_BUCKET", "").strip()
+s3_manager = S3ModelManager(bucket_name=S3_MODELS_BUCKET if S3_MODELS_BUCKET else None)
+
+
+def _try_load_optional_scaler(scaler_path: str) -> bool:
+    """Verifica se o scaler opcional existe (local ou S3)."""
+    if S3_MODELS_BUCKET and s3_manager.s3_enabled:
+        # Para S3, tentamos carregar e captamos exceção
+        try:
+            s3_manager.load_joblib(scaler_path.split("/")[-1])
+            return True
+        except FileNotFoundError:
+            return False
+    # Fallback local
+    return os.path.exists(scaler_path)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     validate_bedrock_configuration_for_startup()
     logger.info("Carregando modelo LSTM Hourly e scaler...")
     try:
-        _model = load_trained_model(MODEL_PATH)
-        _scaler = joblib.load(SCALER_PATH)
+        _model = load_trained_model(MODEL_PATH, s3_bucket=S3_MODELS_BUCKET if S3_MODELS_BUCKET else None)
+        _scaler = s3_manager.load_joblib(SCALER_PATH.split("/")[-1])
         _scaler_return = (
-            joblib.load(SCALER_RETURN_PATH) if os.path.exists(SCALER_RETURN_PATH) else None
+            s3_manager.load_joblib(SCALER_RETURN_PATH.split("/")[-1])
+            if _try_load_optional_scaler(SCALER_RETURN_PATH)
+            else None
         )
 
         try:
