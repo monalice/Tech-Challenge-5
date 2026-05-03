@@ -423,6 +423,18 @@ def configure_mlflow() -> None:
             "Use o endpoint HTTP/HTTPS do MLflow Tracking Server com backend SQL (RDS)."
         )
 
+    if not MLFLOW_ARTIFACT_URI:
+        raise OSError(
+            "MLFLOW_ARTIFACT_URI não foi definida. Configure um bucket S3 para artefatos "
+            "de treino (ex.: s3://<bucket>/<prefix>)."
+        )
+
+    if not MLFLOW_ARTIFACT_URI.startswith("s3://"):
+        raise OSError(
+            "MLFLOW_ARTIFACT_URI inválida para produção AWS-only. Use um caminho S3 "
+            "(ex.: s3://<bucket>/<prefix>)."
+        )
+
     mlflow.set_tracking_uri(tracking_uri)
 
     client = mlflow.MlflowClient()
@@ -437,6 +449,18 @@ def configure_mlflow() -> None:
             mlflow.create_experiment(MLFLOW_EXPERIMENT_NAME)
 
     mlflow.set_experiment(experiment_name=MLFLOW_EXPERIMENT_NAME)
+
+    refreshed_experiment = client.get_experiment_by_name(MLFLOW_EXPERIMENT_NAME)
+    artifact_location = (
+        refreshed_experiment.artifact_location
+        if refreshed_experiment is not None
+        else ""
+    )
+    if not str(artifact_location).startswith("s3://"):
+        raise OSError(
+            "artifact_location do experimento MLflow não aponta para S3. "
+            "Ajuste MLFLOW_ARTIFACT_URI e/ou o experimento para usar s3://."
+        )
 
 
 CHAMPION_METRIC = "mae_price"  # métrica usada na comparação champion-challenger

@@ -11,10 +11,3 @@ stages:
     deps:
       - training/train_model.py
       - models/btc_hourly_cache.csv
-    outs:
-      - models/lstm_btc_hourly.keras
-      - models/scaler_btc.gz
-      - models/scaler_btc_return.gz
-    metrics:
-      - models/model_metadata_btc.json:
-          cache: false
