@@ -224,3 +224,5 @@ evaluation/results/
 # Terraform local cache/providers
 infra/terraform/.terraform/
 infra/terraform/providers-cache/
+
+.vscode/
