@@ -86,6 +86,7 @@ def test_validate_bedrock_configuration_for_startup_allows_non_production(monkey
     monkeypatch.delenv("ENV", raising=False)
     monkeypatch.delenv("STAGE", raising=False)
     monkeypatch.delenv("DEPLOY_ENV", raising=False)
+    monkeypatch.delenv("BEDROCK_AWS_REGION", raising=False)
     monkeypatch.setenv("AWS_REGION", "local-test-1")
 
     app_module.validate_bedrock_configuration_for_startup()
@@ -93,6 +94,7 @@ def test_validate_bedrock_configuration_for_startup_allows_non_production(monkey
 
 def test_validate_bedrock_configuration_for_startup_rejects_placeholder_in_production(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("BEDROCK_AWS_REGION", raising=False)
     monkeypatch.setenv("AWS_REGION", "your-aws-region")
 
     with pytest.raises(RuntimeError, match="inválida para produção"):
@@ -103,6 +105,7 @@ def test_validate_bedrock_configuration_for_startup_rejects_invalid_format_in_pr
     monkeypatch,
 ):
     monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("BEDROCK_AWS_REGION", raising=False)
     monkeypatch.setenv("AWS_REGION", "insecure-region")
 
     with pytest.raises(RuntimeError, match="formato inválido"):
@@ -111,6 +114,7 @@ def test_validate_bedrock_configuration_for_startup_rejects_invalid_format_in_pr
 
 def test_validate_bedrock_configuration_for_startup_accepts_valid_format_in_production(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("BEDROCK_AWS_REGION", raising=False)
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("BEDROCK_GUARDRAIL_ID", "gr-123")
     monkeypatch.setenv("BEDROCK_GUARDRAIL_VERSION", "1")
@@ -120,6 +124,7 @@ def test_validate_bedrock_configuration_for_startup_accepts_valid_format_in_prod
 
 def test_validate_bedrock_configuration_for_startup_requires_guardrail_in_production(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("BEDROCK_AWS_REGION", raising=False)
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.delenv("BEDROCK_GUARDRAIL_ID", raising=False)
     monkeypatch.delenv("BEDROCK_GUARDRAIL_VERSION", raising=False)
