@@ -226,3 +226,4 @@ infra/terraform/.terraform/
 infra/terraform/providers-cache/
 
 .vscode/
+"models/btc_hourly_cache.csv" 
