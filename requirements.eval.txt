@@ -160,9 +160,7 @@ dill==0.4.1
     #   datasets
     #   multiprocess
 diskcache==5.6.3
-    # via
-    #   py-key-value-aio
-    #   ragas
+    # via ragas
 distro==1.9.0
     # via
     #   iterative-telemetry
@@ -213,6 +211,7 @@ frozenlist==1.8.0
     #   aiosignal
 fsspec==2026.2.0
     # via
+    #   -r requirements.in
     #   datasets
     #   evidently
     #   huggingface-hub
@@ -227,9 +226,7 @@ google-auth==2.50.0
 google-pasta==0.2.0
     # via tensorflow
 googleapis-common-protos==1.74.0
-    # via
-    #   opentelemetry-exporter-otlp-proto-grpc
-    #   opentelemetry-exporter-otlp-proto-http
+    # via opentelemetry-exporter-otlp-proto-grpc
 graphene==3.4.3
     # via mlflow
 graphql-core==3.2.8
@@ -492,7 +489,6 @@ openai==2.33.0
     # via
     #   instructor
     #   langchain-openai
-    #   langfuse
     #   ragas
 opentelemetry-api==1.41.1
     # via
@@ -689,7 +685,7 @@ pypika==0.51.1
     # via chromadb
 pyproject-hooks==1.2.0
     # via build
-pyreadline3==3.5.4 ; sys_platform == "win32"
+pyreadline3==3.5.4
     # via humanfriendly
 pytest==9.0.3
     # via -r requirements.eval.in
@@ -709,7 +705,7 @@ pytz==2026.1.post1
     # via
     #   pandas
     #   yfinance
-pywin32==311 ; sys_platform == "win32"
+pywin32==311
     # via docker
 pyyaml==6.0.3
     # via
