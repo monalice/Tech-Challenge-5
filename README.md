@@ -33,6 +33,28 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+### Gerenciamento de dependências com pip-tools
+
+Arquivos fonte:
+
+- [requirements.in](requirements.in)
+- [requirements.eval.in](requirements.eval.in)
+- [requirements.dataops.in](requirements.dataops.in)
+
+Arquivos lock gerados:
+
+- [requirements.txt](requirements.txt)
+- [requirements.eval.txt](requirements.eval.txt)
+- [requirements.dataops.txt](requirements.dataops.txt)
+
+Comandos principais:
+
+```bash
+make deps-compile   # recompila locks
+make deps-upgrade   # recompila locks com upgrade
+make deps-sync      # sincroniza ambiente exatamente com os locks
+```
+
 ### Subir API localmente
 
 ```bash

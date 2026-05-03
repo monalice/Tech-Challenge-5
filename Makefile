@@ -1,7 +1,23 @@
-.PHONY: install test lint type-check security train serve docker-build quality drift-check drift-scheduler llm-judge llm-judge-live
+.PHONY: install test lint type-check security train serve docker-build quality drift-check drift-scheduler llm-judge llm-judge-live pip-tools-install deps-compile deps-upgrade deps-sync
 
 install:
 	pip install -e ".[dev]"
+
+pip-tools-install:
+	pip install pip-tools
+
+deps-compile: pip-tools-install
+	pip-compile --resolver=backtracking -o requirements.txt requirements.in
+	pip-compile --resolver=backtracking -o requirements.eval.txt requirements.eval.in
+	pip-compile --resolver=backtracking -o requirements.dataops.txt requirements.dataops.in
+
+deps-upgrade: pip-tools-install
+	pip-compile --resolver=backtracking --upgrade -o requirements.txt requirements.in
+	pip-compile --resolver=backtracking --upgrade -o requirements.eval.txt requirements.eval.in
+	pip-compile --resolver=backtracking --upgrade -o requirements.dataops.txt requirements.dataops.in
+
+deps-sync: pip-tools-install
+	pip-sync requirements.txt requirements.eval.txt requirements.dataops.txt
 
 test:
 	pytest tests/ --cov=src --cov-fail-under=60 -v
