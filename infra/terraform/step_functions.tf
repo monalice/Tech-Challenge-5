@@ -51,7 +51,7 @@ resource "aws_sfn_state_machine" "drift_retrain" {
             ContainerOverrides = [
               {
                 Name    = "training"
-                Command = ["python", "-u", "training/train_model.py"]
+                Command = ["python", "-m", "training.train_model"]
                 Environment = [
                   {
                     Name  = "MLFLOW_AUTO_PROMOTE_VALIDATED"
