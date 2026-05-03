@@ -685,7 +685,7 @@ pypika==0.51.1
     # via chromadb
 pyproject-hooks==1.2.0
     # via build
-pyreadline3==3.5.4
+pyreadline3==3.5.4 ; sys_platform == "win32"
     # via humanfriendly
 pytest==9.0.3
     # via -r requirements.eval.in
@@ -705,7 +705,7 @@ pytz==2026.1.post1
     # via
     #   pandas
     #   yfinance
-pywin32==311
+pywin32==311 ; sys_platform == "win32"
     # via docker
 pyyaml==6.0.3
     # via
