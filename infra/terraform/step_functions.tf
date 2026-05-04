@@ -4,10 +4,9 @@
 # Fluxo de retreino desacoplado (MLOps Nível 2, sem SPOF):
 #
 #   EventBridge → TrainChallenger(ECS)
-#                  └─stdout JSON: {run_id, model_version}
 #                     ↓
 #                 EvaluateChampionChallenger(ECS)
-#                    (recebe CHALLENGER_RUN_ID)
+#                    (resolve challenger pelo alias no Model Registry)
 #                     ↓
 #                 Choice por exit code
 #                     ├─ exit 0  -> EvaluationPassed (Success)
@@ -15,8 +14,8 @@
 #                     └─ exit 1  -> EvaluationFailed (Fail)
 #
 # Observação de integração:
-#   - O estado de treinamento espera payload JSON no output da task com
-#     `run_id` e `model_version` para repassar ao próximo estado.
+#   - `ecs:runTask.sync` retorna metadados da task ECS (não o stdout do container).
+#   - A etapa de avaliação resolve run/version do challenger via alias no Model Registry.
 # ---------------------------------------------------------------------------
 
 locals {
@@ -43,9 +42,9 @@ resource "aws_sfn_state_machine" "drift_retrain" {
         Type     = "Task"
         Resource = "arn:aws:states:::ecs:runTask.sync"
         Parameters = {
-          LaunchType     = "FARGATE"
-          Cluster        = aws_ecs_cluster.main.arn
-          TaskDefinition = aws_ecs_task_definition.training.arn
+          LaunchType           = "FARGATE"
+          Cluster              = aws_ecs_cluster.main.arn
+          TaskDefinition       = aws_ecs_task_definition.training.arn
           NetworkConfiguration = local.sfn_network_config
           Overrides = {
             ContainerOverrides = [
@@ -62,11 +61,6 @@ resource "aws_sfn_state_machine" "drift_retrain" {
             ]
           }
         }
-        ResultSelector = {
-          "train_task_output.$" = "$"
-          "run_id.$"            = "$.Output.run_id"
-          "model_version.$"     = "$.Output.model_version"
-        }
         ResultPath = "$.training"
         Next       = "EvaluateChampionChallenger"
         Catch = [
@@ -82,9 +76,9 @@ resource "aws_sfn_state_machine" "drift_retrain" {
         Type     = "Task"
         Resource = "arn:aws:states:::ecs:runTask.sync"
         Parameters = {
-          LaunchType     = "FARGATE"
-          Cluster        = aws_ecs_cluster.main.arn
-          TaskDefinition = aws_ecs_task_definition.training.arn
+          LaunchType           = "FARGATE"
+          Cluster              = aws_ecs_cluster.main.arn
+          TaskDefinition       = aws_ecs_task_definition.training.arn
           NetworkConfiguration = local.sfn_network_config
           Overrides = {
             ContainerOverrides = [
@@ -92,10 +86,6 @@ resource "aws_sfn_state_machine" "drift_retrain" {
                 Name    = "training"
                 Command = ["python", "-u", "scripts/evaluate_champion_challenger.py"]
                 Environment = [
-                  {
-                    Name     = "CHALLENGER_RUN_ID"
-                    "Value.$" = "$.training.run_id"
-                  },
                   {
                     Name  = "CHAMPION_MIN_IMPROVEMENT"
                     Value = var.champion_min_improvement
@@ -157,9 +147,9 @@ resource "aws_sfn_state_machine" "drift_retrain" {
       }
 
       TrainingFailed = {
-        Type    = "Fail"
-        Error   = "TrainingError"
-        Cause   = "O treinamento do challenger falhou. Verifique os logs do ECS em /ecs/${local.name_prefix}/training."
+        Type  = "Fail"
+        Error = "TrainingError"
+        Cause = "O treinamento do challenger falhou. Verifique os logs do ECS em /ecs/${local.name_prefix}/training."
       }
 
       EvaluationFailed = {

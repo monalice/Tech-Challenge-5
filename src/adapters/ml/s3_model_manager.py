@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import tempfile
 from typing import Any
 
 import joblib
@@ -74,16 +75,27 @@ class S3ModelManager:
     def _save_model_s3(self, model: Any, file_name: str) -> str:
         """Salva modelo no S3."""
         try:
-            # Serializa em memória
-            buffer = io.BytesIO()
-            model.save(buffer)
-            buffer.seek(0)
+            _, ext = os.path.splitext(file_name)
+            save_suffix = ext if ext in {".keras", ".h5"} else ".keras"
+
+            with tempfile.NamedTemporaryFile(suffix=save_suffix, delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+
+            try:
+                model.save(tmp_path)
+                with open(tmp_path, "rb") as model_file:
+                    model_bytes = model_file.read()
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
             key = self._s3_key(file_name)
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=key,
-                Body=buffer.getvalue(),
+                Body=model_bytes,
             )
             s3_path = f"s3://{self.bucket_name}/{key}"
             logger.info("Modelo salvo em S3: %s", s3_path)
@@ -173,14 +185,26 @@ class S3ModelManager:
 
             key = self._s3_key(file_name)
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)
-            buffer = io.BytesIO(response["Body"].read())
-            buffer.seek(0)
+            model_bytes = response["Body"].read()
 
             keras_module = getattr(tf, "keras", None)
             if keras_module is None or not hasattr(keras_module, "models"):
                 raise RuntimeError("TensorFlow/Keras indisponível")
 
-            model = keras_module.models.load_model(buffer)
+            _, ext = os.path.splitext(file_name)
+            load_suffix = ext if ext in {".keras", ".h5"} else ".keras"
+            with tempfile.NamedTemporaryFile(suffix=load_suffix, delete=False) as tmp_file:
+                tmp_file.write(model_bytes)
+                tmp_path = tmp_file.name
+
+            try:
+                model = keras_module.models.load_model(tmp_path)
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
             logger.info("Modelo carregado de S3: s3://%s/%s", self.bucket_name, key)
             return model
         except self.s3_client.exceptions.NoSuchKey as e:
