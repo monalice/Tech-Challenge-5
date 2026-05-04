@@ -321,9 +321,11 @@ def _normalize_repo_path(path: str) -> str:
 
 def _get_dvc_output_hash(dataset_path: str, dvc_lock_path: str = DVC_LOCK_PATH) -> str:
     if not os.path.exists(dvc_lock_path):
-        raise RuntimeError(
-            f"Arquivo '{dvc_lock_path}' ausente. Nao foi possivel capturar hash DVC do dataset."
+        logger.warning(
+            "Arquivo '%s' ausente no container. Hash DVC do dataset indisponivel.",
+            dvc_lock_path,
         )
+        return "unknown-hash"
 
     with open(dvc_lock_path, encoding="utf-8") as dvc_lock_file:
         lock_data = yaml.safe_load(dvc_lock_file) or {}
@@ -373,17 +375,34 @@ def build_training_data_lineage(
 ) -> dict[str, str]:
     git_sha = get_git_sha()
     dvc_data_hash = _get_dvc_output_hash(dataset_path=dataset_path, dvc_lock_path=dvc_lock_path)
-    lineage_complete = git_sha != "unknown"
+    git_ok = git_sha != "unknown"
+    dvc_ok = dvc_data_hash != "unknown-hash"
+    lineage_complete = git_ok and dvc_ok
+
     if lineage_complete:
         # Em DVC, a revisao de dados e normalmente o commit Git que referencia o lockfile.
         dvc_data_rev = git_sha
         lineage_alert = ""
-    else:
+    elif not git_ok and dvc_ok:
         dvc_data_rev = f"dvc-lock-only:{dvc_data_hash[:12]}"
         lineage_alert = "git_sha_unavailable"
         logger.warning(
             "Lineage parcial detectado: git_sha indisponivel; "
             "promocao deve ser bloqueada ate haver SHA valido."
+        )
+    elif git_ok and not dvc_ok:
+        dvc_data_rev = f"git-only:{git_sha[:12]}"
+        lineage_alert = "dvc_hash_unavailable"
+        logger.warning(
+            "Lineage parcial detectado: dvc.lock ausente no container; "
+            "promocao deve ser bloqueada ate que dvc.lock seja incluido na imagem."
+        )
+    else:
+        dvc_data_rev = "no-lineage:unknown"
+        lineage_alert = "git_sha_unavailable,dvc_hash_unavailable"
+        logger.warning(
+            "Lineage indisponivel: git_sha e dvc.lock ausentes; "
+            "promocao sera bloqueada."
         )
 
     return {

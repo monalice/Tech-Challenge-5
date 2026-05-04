@@ -17,6 +17,7 @@ COPY src ./src
 COPY training ./training
 COPY scripts ./scripts
 COPY models ./models
+COPY dvc.lock ./dvc.lock
 
 EXPOSE 8000
 
