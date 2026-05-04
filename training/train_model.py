@@ -882,6 +882,25 @@ def normalize_download_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     normalized = df[REQUIRED_RAW_COLUMNS].copy().dropna()
     normalized = normalized[~normalized.index.duplicated(keep="last")]
     normalized = normalized.sort_index()
+    # Ensure UTC-aware DatetimeIndex (yfinance returns UTC; CSV round-trip may lose tz)
+    if not isinstance(normalized.index, pd.DatetimeIndex):
+        normalized.index = pd.to_datetime(normalized.index, utc=True)
+    elif normalized.index.tz is None:
+        normalized.index = normalized.index.tz_localize("UTC")
+    else:
+        normalized.index = normalized.index.tz_convert("UTC")
+
+    # Resample to strict 1h grid — yfinance/Binance data can have slightly
+    # irregular intervals (DST, partial candles, API quirks). OHLCV aggregation:
+    normalized = normalized.resample("1h").agg(
+        {
+            "Close": "last",
+            "High": "max",
+            "Low": "min",
+            "Volume": "sum",
+        }
+    )
+    normalized = normalized.dropna()
     return normalized
 
 
