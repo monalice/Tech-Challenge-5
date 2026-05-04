@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import os
@@ -86,10 +87,8 @@ class S3ModelManager:
                 with open(tmp_path, "rb") as model_file:
                     model_bytes = model_file.read()
             finally:
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp_path)
-                except OSError:
-                    pass
 
             key = self._s3_key(file_name)
             self.s3_client.put_object(
@@ -200,10 +199,8 @@ class S3ModelManager:
             try:
                 model = keras_module.models.load_model(tmp_path)
             finally:
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp_path)
-                except OSError:
-                    pass
 
             logger.info("Modelo carregado de S3: s3://%s/%s", self.bucket_name, key)
             return model
