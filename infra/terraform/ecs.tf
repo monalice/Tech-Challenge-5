@@ -221,6 +221,16 @@ resource "aws_ecs_task_definition" "training" {
         {
           name  = "TF_ENABLE_ONEDNN_OPTS"
           value = "0"
+        },
+        # Silence MLflow/GitPython git-not-found warnings
+        {
+          name  = "GIT_PYTHON_REFRESH"
+          value = "quiet"
+        },
+        # S3 bucket for model artifact storage (enables S3 upload path in training)
+        {
+          name  = "S3_MODELS_BUCKET"
+          value = aws_s3_bucket.artifacts.id
         }
       ]
 

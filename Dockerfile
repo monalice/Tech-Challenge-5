@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH="/app" \
     TF_CPP_MIN_LOG_LEVEL="2" \
+    GIT_PYTHON_REFRESH="quiet" \
     TRAINING_GIT_SHA="${VCS_REF}"
 
 WORKDIR /app
@@ -18,6 +19,7 @@ COPY training ./training
 COPY scripts ./scripts
 COPY models ./models
 COPY dvc.lock ./dvc.lock
+COPY evaluation/fairness_report.json ./evaluation/fairness_report.json
 
 EXPOSE 8000
 
