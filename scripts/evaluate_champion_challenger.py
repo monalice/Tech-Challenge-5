@@ -25,7 +25,6 @@ import sys
 from typing import Any
 
 import numpy as np
-import pandas as pd
 from sklearn.metrics import roc_auc_score
 
 from src.adapters.ml.s3_model_manager import S3ModelManager
@@ -52,12 +51,6 @@ CHAMPION_ALIAS = os.getenv("MLFLOW_CHAMPION_ALIAS", "champion")
 CANDIDATE_ALIAS = os.getenv("MLFLOW_CANDIDATE_ALIAS", "candidate")
 PRODUCTION_ALIAS = os.getenv("MLFLOW_PRODUCTION_ALIAS", "Production")
 FALLBACK_CANDIDATE_ALIASES = ["Staging", "challenger"]
-
-HOLDOUT_DATA_PATH = os.getenv(
-    "CHAMPION_CHALLENGER_HOLDOUT_PATH",
-    "data/processed/champion_challenger_holdout.csv",
-)
-HOLDOUT_TARGET_COLUMN = os.getenv("CHAMPION_CHALLENGER_TARGET_COLUMN", "target")
 
 _min_improvement_raw = os.getenv("CHAMPION_MIN_IMPROVEMENT", "0.005")
 MIN_IMPROVEMENT: float = float(_min_improvement_raw)
@@ -217,34 +210,32 @@ def _resolve_candidate_version(client: Any) -> tuple[str, str]:
     return version, run_id
 
 
-def _load_holdout_dataset(path: str, target_column: str) -> tuple[pd.DataFrame, np.ndarray]:
-    """Carrega holdout isolado para validação Champion-Challenger.
+def _load_holdout_from_s3(s3_manager: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Carrega holdout (X_test, y_test) salvo pelo treinamento a partir do S3.
 
     Args:
-        path: Caminho CSV do holdout.
-        target_column: Nome da coluna alvo binária.
+        s3_manager: Instância de S3ModelManager.
 
     Returns:
-        Tupla ``(X_holdout, y_holdout)``.
+        Tupla ``(X_holdout, y_holdout)`` como arrays numpy.
 
     Raises:
-        RuntimeError: Se dataset/coluna não estiver disponível.
+        RuntimeError: Se o holdout não for encontrado em S3.
     """
-    if not os.path.exists(path):
-        raise RuntimeError(f"Holdout set não encontrado: {path}")
-
-    holdout_df = pd.read_csv(path)
-    if target_column not in holdout_df.columns:
+    try:
+        holdout = s3_manager.load_joblib("challenger/holdout.joblib")
+    except FileNotFoundError as exc:
         raise RuntimeError(
-            f"Coluna alvo '{target_column}' ausente no holdout. Colunas: {list(holdout_df.columns)}"
-        )
+            "Holdout não encontrado em S3 (challenger/holdout.joblib). "
+            "Execute o treinamento novamente para gerar o artefato."
+        ) from exc
 
-    y_true = holdout_df[target_column].to_numpy()
-    X_holdout = holdout_df.drop(columns=[target_column])
-    return X_holdout, y_true
+    X_holdout: np.ndarray = holdout["X"]
+    y_holdout: np.ndarray = holdout["y"]
+    return X_holdout, y_holdout
 
 
-def _predict_scores(model: Any, X_holdout: pd.DataFrame) -> np.ndarray:
+def _predict_scores(model: Any, X_holdout: Any) -> np.ndarray:
     """Gera vetor de score para cálculo de AUC.
 
     Args:
@@ -392,28 +383,33 @@ def main() -> int:
         challenger_model = load_challenger_from_s3(s3_manager)
         champion_model = load_champion_from_s3(s3_manager)  # None se não há champion ainda
 
-        X_holdout, y_holdout = _load_holdout_dataset(
-            path=HOLDOUT_DATA_PATH,
-            target_column=HOLDOUT_TARGET_COLUMN,
-        )
+        if champion_model is None:
+            # Sem champion em produção: auto-promoção do primeiro modelo sem gate de AUC.
+            promote_artifacts_s3(s3_manager)
+            _promote_to_production_alias(client, challenger_version, float("inf"))
+            logger.info(
+                "APPROVED: primeiro modelo auto-promovido a champion "
+                "(S3 + MLflow alias '%s') | challenger_version=%s",
+                PRODUCTION_ALIAS,
+                challenger_version,
+            )
+            return EXIT_PROMOTED
+
+        # Champion existe: carrega holdout do S3 e compara AUC.
+        X_holdout, y_holdout = _load_holdout_from_s3(s3_manager)
 
         challenger_scores = _predict_scores(challenger_model, X_holdout)
         challenger_auc = float(roc_auc_score(y_holdout, challenger_scores))
-
-        champion_auc: float | None = None
-        if champion_model is not None:
-            champion_scores = _predict_scores(champion_model, X_holdout)
-            champion_auc = float(roc_auc_score(y_holdout, champion_scores))
-            delta_auc = challenger_auc - champion_auc
-        else:
-            # Sem champion em produção: auto-promoção do primeiro modelo
-            delta_auc = float("inf")
+        champion_scores = _predict_scores(champion_model, X_holdout)
+        champion_auc = float(roc_auc_score(y_holdout, champion_scores))
+        delta_auc = challenger_auc - champion_auc
 
         logger.info(
-            "Evaluation summary | champion_auc=%s challenger_auc=%.6f delta_auc=%s threshold=%.6f",
-            f"{champion_auc:.6f}" if champion_auc is not None else "None",
+            "Evaluation summary | champion_auc=%.6f challenger_auc=%.6f"
+            " delta_auc=%.6f threshold=%.6f",
+            champion_auc,
             challenger_auc,
-            f"{delta_auc:.6f}" if np.isfinite(delta_auc) else "inf",
+            delta_auc,
             MIN_IMPROVEMENT,
         )
 

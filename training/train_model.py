@@ -1453,6 +1453,19 @@ def main() -> None:
         )
         logger.info("Artefatos registrados no MLflow (model/.keras, scalers/.gz e metadata).")
 
+        # Salva holdout (X_test, y_test) no S3 para uso pelo EvaluateChampionChallenger.
+        if S3_MODELS_BUCKET and s3_manager.s3_enabled:
+            try:
+                s3_manager.save_joblib(
+                    {"X": X_test, "y": y_test},
+                    "challenger/holdout.joblib",
+                )
+                logger.info(
+                    "Holdout salvo em S3: challenger/holdout.joblib (%d amostras)", len(y_test)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Falha ao salvar holdout no S3: %s", exc)
+
         # 9. Sem promoção automática: mantém somente estado inicial Challenger/Staging.
         initial_alias = register_challenger_initial_state(challenger_version)
         logger.info("Estado inicial aplicado no Registry: %s", initial_alias)
