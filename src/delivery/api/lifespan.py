@@ -27,6 +27,11 @@ s3_manager = S3ModelManager(bucket_name=S3_MODELS_BUCKET if S3_MODELS_BUCKET els
 
 # Prefixo S3 do modelo em produção (champion)
 _S3_CHAMPION_PREFIX = "champion"
+STRICT_ARTIFACT_STARTUP = os.getenv("STRICT_ARTIFACT_STARTUP", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 
 def _try_load_optional_scaler(scaler_path: str) -> bool:
@@ -93,7 +98,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.artifacts = None
         app.state.service = None
         app.state.agent_llm = None
-        raise RuntimeError(f"Falha crítica ao carregar artefatos do modelo: {e}") from e
+        logger.exception("Falha ao carregar artefatos na inicialização: %s", e)
+        if STRICT_ARTIFACT_STARTUP:
+            raise RuntimeError(f"Falha crítica ao carregar artefatos do modelo: {e}") from e
+        logger.warning(
+            "API iniciada em modo degradado (sem artefatos). "
+            "Defina STRICT_ARTIFACT_STARTUP=true para falhar o startup."
+        )
     yield
     app.state.artifacts = None
     app.state.service = None
