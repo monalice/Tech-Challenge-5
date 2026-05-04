@@ -3,7 +3,6 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 
 import joblib
 from fastapi import FastAPI
@@ -68,9 +67,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
         try:
-            with open(MODEL_META_PATH, encoding="utf-8") as meta_file:
-                _metadata: dict[str, Any] = json.load(meta_file)
-        except FileNotFoundError:
+            if S3_MODELS_BUCKET and s3_manager.s3_enabled:
+                meta_key = s3_manager._s3_key(
+                    f"{_S3_CHAMPION_PREFIX}/{MODEL_META_PATH.split('/')[-1]}"
+                )
+                meta_response = s3_manager.s3_client.get_object(
+                    Bucket=S3_MODELS_BUCKET,
+                    Key=meta_key,
+                )
+                meta_content = meta_response["Body"].read().decode("utf-8")
+                _metadata = json.loads(meta_content)
+            else:
+                with open(MODEL_META_PATH, encoding="utf-8") as meta_file:
+                    _metadata = json.load(meta_file)
+        except (FileNotFoundError, ValueError, TypeError):
             _metadata = {
                 "target": "log_return",
                 "lookback": LOOKBACK,

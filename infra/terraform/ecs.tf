@@ -57,6 +57,10 @@ resource "aws_ecs_task_definition" "app" {
           value = var.aws_region
         },
         {
+          name  = "S3_MODELS_BUCKET"
+          value = aws_s3_bucket.artifacts.id
+        },
+        {
           name  = "BEDROCK_AWS_REGION"
           value = var.aws_region
         },
