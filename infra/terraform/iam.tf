@@ -332,6 +332,15 @@ data "aws_iam_policy_document" "github_actions_deploy" {
   statement {
     effect = "Allow"
     actions = [
+      "ecs:ListTasks",
+      "ecs:DescribeTasks"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
       "s3:GetObject"
     ]
     resources = ["${aws_s3_bucket.artifacts.arn}/*"]

@@ -210,7 +210,7 @@ jobs:
             --service-name "$ECS_SERVICE_NAME" \
             --desired-status RUNNING \
             --query 'taskArns' \
-            --output json
+            --output json || echo "[WARN] Unable to list RUNNING tasks. Check ecs:ListTasks permission."
 
           echo "[INFO] Stopped task ARNs:"
           STOPPED_TASKS=$(aws ecs list-tasks \
@@ -218,14 +218,14 @@ jobs:
             --service-name "$ECS_SERVICE_NAME" \
             --desired-status STOPPED \
             --query 'taskArns' \
-            --output text)
+            --output text 2>/dev/null || true)
 
           if [ -n "$STOPPED_TASKS" ] && [ "$STOPPED_TASKS" != "None" ]; then
             aws ecs describe-tasks \
               --cluster "$ECS_CLUSTER_NAME" \
               --tasks $STOPPED_TASKS \
               --query 'tasks[*].{taskArn:taskArn,lastStatus:lastStatus,stopCode:stopCode,stoppedReason:stoppedReason,containers:containers[*].{name:name,exitCode:exitCode,reason:reason,lastStatus:lastStatus}}' \
-              --output json
+              --output json || echo "[WARN] Unable to describe STOPPED tasks. Check ecs:DescribeTasks permission."
           else
             echo "No stopped tasks found."
           fi
