@@ -23,4 +23,4 @@ COPY evaluation/fairness_report.json ./evaluation/fairness_report.json
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "if [ ! -f models/lstm_btc_hourly.keras ] || [ ! -f models/scaler_btc.gz ]; then echo '[ERROR] Artefatos ausentes em models/. Necessário: lstm_btc_hourly.keras e scaler_btc.gz'; ls -la models || true; exit 1; fi; python -m uvicorn src.app:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "if [ ! -f models/lstm_btc_hourly.keras ] || [ ! -f models/scaler_btc.gz ]; then echo '[WARN] Artefatos ausentes em models/. API iniciará em modo degradado (health=degraded).'; ls -la models || true; fi; python -m uvicorn src.app:app --host 0.0.0.0 --port 8000"]
