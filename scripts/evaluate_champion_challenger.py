@@ -398,10 +398,20 @@ def main() -> int:
         # Champion existe: carrega holdout do S3 e compara AUC.
         X_holdout, y_holdout = _load_holdout_from_s3(s3_manager)
 
+        # O modelo é regressão (log_return contínuo). Binariza para AUC:
+        # retorno > 0 → 1 (preço subiu), ≤ 0 → 0 (preço caiu/estável).
+        y_binary = (y_holdout > 0).astype(int)
+        logger.info(
+            "Holdout binarizado para AUC | amostras=%d positivos=%d (%.1f%%)",
+            len(y_binary),
+            int(y_binary.sum()),
+            100.0 * y_binary.mean(),
+        )
+
         challenger_scores = _predict_scores(challenger_model, X_holdout)
-        challenger_auc = float(roc_auc_score(y_holdout, challenger_scores))
+        challenger_auc = float(roc_auc_score(y_binary, challenger_scores))
         champion_scores = _predict_scores(champion_model, X_holdout)
-        champion_auc = float(roc_auc_score(y_holdout, champion_scores))
+        champion_auc = float(roc_auc_score(y_binary, champion_scores))
         delta_auc = challenger_auc - champion_auc
 
         logger.info(
