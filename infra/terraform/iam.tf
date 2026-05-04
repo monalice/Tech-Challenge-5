@@ -224,3 +224,130 @@ resource "aws_iam_role_policy" "eventbridge_invoke_sfn" {
   role   = aws_iam_role.eventbridge_invoke_sfn.id
   policy = data.aws_iam_policy_document.eventbridge_invoke_sfn.json
 }
+
+# ---------------------------------------------------------------------------
+# GitHub Actions OIDC deploy role
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_openid_connect_provider" "github_actions" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [var.github_oidc_thumbprint]
+
+  tags = merge(local.common_tags, {
+    Name      = "${local.name_prefix}-github-oidc-provider"
+    Component = "cicd"
+  })
+}
+
+data "aws_iam_policy_document" "github_actions_assume_role" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "sts:AssumeRoleWithWebIdentity"
+    ]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github_actions.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values = concat(
+        formatlist(
+          "repo:%s/%s:ref:refs/heads/%s",
+          var.github_repository_owner,
+          var.github_repository_name,
+          var.github_allowed_branches,
+        ),
+        formatlist(
+          "repo:%s/%s:environment:%s",
+          var.github_repository_owner,
+          var.github_repository_name,
+          var.github_allowed_environments,
+        )
+      )
+    }
+  }
+}
+
+resource "aws_iam_role" "github_actions_deploy" {
+  name               = "${local.name_prefix}-github-actions-deploy-role"
+  assume_role_policy = data.aws_iam_policy_document.github_actions_assume_role.json
+
+  tags = merge(local.common_tags, {
+    Name      = "${local.name_prefix}-github-actions-deploy-role"
+    Component = "cicd"
+  })
+}
+
+data "aws_iam_policy_document" "github_actions_deploy" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecr:GetAuthorizationToken"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart"
+    ]
+    resources = [aws_ecr_repository.app.arn]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecs:DescribeServices",
+      "ecs:UpdateService"
+    ]
+    resources = [aws_ecs_service.app.id]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecs:DescribeTaskDefinition"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:GetObject"
+    ]
+    resources = ["${aws_s3_bucket.artifacts.arn}/*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket"
+    ]
+    resources = [aws_s3_bucket.artifacts.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "github_actions_deploy" {
+  name   = "${local.name_prefix}-github-actions-deploy-policy"
+  role   = aws_iam_role.github_actions_deploy.id
+  policy = data.aws_iam_policy_document.github_actions_deploy.json
+}

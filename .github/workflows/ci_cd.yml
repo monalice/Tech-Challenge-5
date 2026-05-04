@@ -89,10 +89,12 @@ jobs:
     name: CD - Build, Push ECR, Deploy ECS
     runs-on: ubuntu-latest
     needs: ci
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     permissions:
       id-token: write
       contents: read
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
 
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
@@ -103,6 +105,41 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve target environment
+        id: target-env
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "name=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate deployment variables
+        run: |
+          missing=0
+          for var in AWS_REGION ECR_REPOSITORY ECS_CLUSTER_NAME ECS_SERVICE_NAME; do
+            if [ -z "${!var}" ]; then
+              echo "[ERROR] Missing required GitHub Environment variable: $var"
+              missing=1
+            fi
+          done
+
+          if [ -z "${{ secrets.AWS_ROLE_TO_ASSUME }}" ]; then
+            echo "[ERROR] Missing required GitHub Environment secret: AWS_ROLE_TO_ASSUME"
+            missing=1
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            echo "Configure variables/secrets in GitHub Environment: ${GITHUB_REF##*/}"
+            exit 1
+          fi
+
+          echo "Deploy target environment: ${{ steps.target-env.outputs.name }}"
+          echo "AWS region: $AWS_REGION"
+          echo "ECR repository: $ECR_REPOSITORY"
+          echo "ECS cluster: $ECS_CLUSTER_NAME"
+          echo "ECS service: $ECS_SERVICE_NAME"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4

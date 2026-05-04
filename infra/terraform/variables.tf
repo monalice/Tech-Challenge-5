@@ -151,3 +151,37 @@ variable "mlflow_candidate_alias" {
   type        = string
   default     = "candidate"
 }
+
+# ---------------------------------------------------------------------------
+# GitHub Actions OIDC (CI/CD deploy role)
+# ---------------------------------------------------------------------------
+
+variable "github_repository_owner" {
+  description = "GitHub repository owner used in OIDC trust policy"
+  type        = string
+  default     = "monalice"
+}
+
+variable "github_repository_name" {
+  description = "GitHub repository name used in OIDC trust policy"
+  type        = string
+  default     = "Tech-Challenge-5"
+}
+
+variable "github_allowed_branches" {
+  description = "Git branches allowed to assume the GitHub Actions OIDC role"
+  type        = list(string)
+  default     = ["main", "develop", "dev"]
+}
+
+variable "github_allowed_environments" {
+  description = "GitHub Environments allowed to assume the GitHub Actions OIDC role"
+  type        = list(string)
+  default     = ["dev", "prod"]
+}
+
+variable "github_oidc_thumbprint" {
+  description = "SHA1 thumbprint for token.actions.githubusercontent.com OIDC provider"
+  type        = string
+  default     = "6938fd4d98bab03faadb97b34396831e3780aea1"
+}

@@ -62,3 +62,8 @@ output "db_password_secret_arn" {
   description = "Secrets Manager ARN for DB password"
   value       = aws_secretsmanager_secret.db_password.arn
 }
+
+output "github_actions_deploy_role_arn" {
+  description = "IAM role ARN to configure in GitHub as AWS_ROLE_TO_ASSUME"
+  value       = aws_iam_role.github_actions_deploy.arn
+}
