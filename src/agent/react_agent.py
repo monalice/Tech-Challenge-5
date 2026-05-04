@@ -194,12 +194,20 @@ def create_agent_llm() -> LLMPort:
         model_kwargs["top_k"] = top_k
 
     chat_bedrock_cls = cast(Any, ChatBedrock)
+
+    # Quando model_id é um ARN (inference profile), langchain_aws não consegue
+    # inferir o provider automaticamente — é necessário passá-lo explicitamente.
+    extra_kwargs: dict[str, Any] = {}
+    if DEFAULT_AGENT_LLM_MODEL.startswith("arn:"):
+        extra_kwargs["provider"] = "anthropic"
+
     return cast(
         LLMPort,
         chat_bedrock_cls(
             model_id=DEFAULT_AGENT_LLM_MODEL,
             region_name=bedrock_region,
             model_kwargs=model_kwargs,
+            **extra_kwargs,
         ),
     )
 

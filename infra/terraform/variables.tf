@@ -156,6 +156,12 @@ variable "mlflow_candidate_alias" {
 # GitHub Actions OIDC (CI/CD deploy role)
 # ---------------------------------------------------------------------------
 
+variable "agent_llm_model" {
+  description = "Bedrock inference profile ARN or model ID for the ReAct agent LLM"
+  type        = string
+  default     = "arn:aws:bedrock:us-east-1:606425862977:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
+
 variable "github_repository_owner" {
   description = "GitHub repository owner used in OIDC trust policy"
   type        = string

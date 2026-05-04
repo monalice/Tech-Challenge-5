@@ -65,6 +65,10 @@ resource "aws_ecs_task_definition" "app" {
           value = var.aws_region
         },
         {
+          name  = "AGENT_LLM_MODEL"
+          value = var.agent_llm_model
+        },
+        {
           name  = "MLFLOW_TRACKING_URI"
           value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.mlflow.address}:5432/${var.db_name}"
         },
