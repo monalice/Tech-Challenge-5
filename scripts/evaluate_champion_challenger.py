@@ -329,7 +329,8 @@ def main() -> int:
                 value="lineage_incomplete",
             )
             logger.info(
-                "REJECTED: challenger not promoted due to incomplete lineage | challenger_version=%s reason=%s",
+                "REJECTED: challenger not promoted due to incomplete lineage | "
+                "challenger_version=%s reason=%s",
                 challenger_version,
                 lineage_reason,
             )

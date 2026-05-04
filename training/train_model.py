@@ -382,7 +382,8 @@ def build_training_data_lineage(
         dvc_data_rev = f"dvc-lock-only:{dvc_data_hash[:12]}"
         lineage_alert = "git_sha_unavailable"
         logger.warning(
-            "Lineage parcial detectado: git_sha indisponivel; promocao deve ser bloqueada ate haver SHA valido."
+            "Lineage parcial detectado: git_sha indisponivel; "
+            "promocao deve ser bloqueada ate haver SHA valido."
         )
 
     return {

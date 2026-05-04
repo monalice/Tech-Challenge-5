@@ -69,7 +69,10 @@ def test_get_git_sha_prefers_env_var(monkeypatch):
     monkeypatch.setenv("TRAINING_GIT_SHA", "sha-from-env")
 
     def _fail_subprocess(*args, **kwargs):
-        raise AssertionError("subprocess.run nao deveria ser chamado quando TRAINING_GIT_SHA existe")
+        raise AssertionError(
+            "subprocess.run nao deveria ser chamado quando "
+            "TRAINING_GIT_SHA existe"
+        )
 
     monkeypatch.setattr(tm.subprocess, "run", _fail_subprocess)
 
