@@ -900,7 +900,12 @@ def normalize_download_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             "Volume": "sum",
         }
     )
-    normalized = normalized.dropna()
+    # Keep a continuous hourly index by filling missing bins deterministically.
+    normalized["Close"] = normalized["Close"].ffill()
+    normalized["High"] = normalized["High"].fillna(normalized["Close"])
+    normalized["Low"] = normalized["Low"].fillna(normalized["Close"])
+    normalized["Volume"] = normalized["Volume"].fillna(0.0)
+    normalized = normalized.dropna(subset=REQUIRED_RAW_COLUMNS)
     return normalized
 
 

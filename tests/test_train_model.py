@@ -109,6 +109,17 @@ def test_normalize_download_dataframe_validates_and_sorts():
     assert not normalized.index.duplicated().any()
 
 
+def test_normalize_download_dataframe_fills_hourly_gaps():
+    df = _price_df(6).drop(_price_df(6).index[2])
+
+    normalized = tm.normalize_download_dataframe(df)
+
+    deltas = normalized.index.to_series().diff().dropna()
+    assert not deltas.empty
+    assert (deltas == pd.Timedelta(hours=1)).all()
+    assert normalized.iloc[2]["Volume"] == 0.0
+
+
 def test_normalize_download_dataframe_multiindex_extracts_ticker():
     base = _price_df(4)
     tuples = [(c, tm.TICKER) for c in ["Close", "High", "Low", "Volume"]]
