@@ -85,6 +85,35 @@ resource "aws_iam_role_policy" "ecs_task_bedrock" {
   policy = data.aws_iam_policy_document.ecs_task_bedrock.json
 }
 
+# ---------------------------------------------------------------------------
+# S3 policy: grants the ECS task role read/write access to the artifacts
+# bucket so that MLflow can store model artifacts and the training script
+# can upload model files via S3ModelManager.
+# ---------------------------------------------------------------------------
+data "aws_iam_policy_document" "ecs_task_s3" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:DeleteObject"
+    ]
+    resources = ["${aws_s3_bucket.artifacts.arn}/*"]
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.artifacts.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_task_s3" {
+  name   = "${local.name_prefix}-ecs-s3-policy"
+  role   = aws_iam_role.ecs_task_role.id
+  policy = data.aws_iam_policy_document.ecs_task_s3.json
+}
+
 data "aws_iam_policy_document" "sfn_assume_role" {
   statement {
     effect = "Allow"
