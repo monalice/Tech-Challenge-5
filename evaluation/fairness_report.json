@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "assessment_type": "quantitative_bias_check",
+  "scope": "BTC LSTM hourly price forecaster",
+  "note": "This model predicts a deterministic financial time series. No protected attributes (race, gender, age, gender, nationality) are present or used as features. Fairness is interpreted as temporal consistency across distinct market regimes.",
+  "protected_attributes": [],
+  "feature_audit": {
+    "result": "clean",
+    "detail": "All features are derived from OHLCV market data (technical indicators and statistical moments). No demographic or proxy variables identified."
+  },
+  "checks": [
+    {
+      "check": "temporal_consistency",
+      "description": "MAE and MAPE stability across walk-forward CV folds",
+      "status": "monitored_via_cv_folds",
+      "evidence": "3-fold walk-forward cross-validation logs MAE per fold in MLflow"
+    },
+    {
+      "check": "regime_stability",
+      "description": "Model trained on data spanning bull, bear, and sideways BTC market conditions",
+      "status": "accepted",
+      "evidence": "Training window covers multiple market regimes in hourly OHLCV history"
+    },
+    {
+      "check": "no_protected_class_features",
+      "description": "No protected-class attributes (race, gender, age, religion, nationality) are used as model inputs",
+      "status": "confirmed",
+      "evidence": "Feature set: Close, High, Low, Volume + derived technical indicators only"
+    },
+    {
+      "check": "data_completeness_bias",
+      "description": "Missing hourly bins are forward-filled (Close) or set to zero (Volume) to avoid silent data-quality bias",
+      "status": "mitigated",
+      "evidence": "normalize_download_dataframe() resamples to strict 1h grid before training"
+    }
+  ],
+  "limitations": [
+    "Model is not designed to inform individual financial decisions.",
+    "Past BTC price patterns may not predict future behavior.",
+    "Extreme market events (black swans) may degrade performance beyond tested thresholds."
+  ],
+  "generated_by": "manual_review",
+  "reviewed_by": "ml-team",
+  "review_date": "2026-05-03",
+  "next_review_date": "2026-18-03"
+}

@@ -1,0 +1,13 @@
+stages:
+  prepare_data:
+    cmd: python -c "from training.train_model import download_crypto_data, save_cached_data; data = download_crypto_data(); save_cached_data(data)"
+    deps:
+      - training/train_model.py
+    outs:
+      - models/btc_hourly_cache.csv
+
+  train_model:
+    cmd: python -u training/train_model.py
+    deps:
+      - training/train_model.py
+      - models/btc_hourly_cache.csv
