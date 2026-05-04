@@ -290,6 +290,11 @@ def validate_required_training_metadata(
 
 
 def get_git_sha() -> str:
+    for env_var in ("TRAINING_GIT_SHA", "GIT_SHA", "GITHUB_SHA"):
+        candidate = os.getenv(env_var, "").strip()
+        if candidate and candidate.lower() != "unknown":
+            return candidate
+
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -366,15 +371,27 @@ def build_training_data_lineage(
     dataset_path: str = CACHE_DATA_PATH,
     dvc_lock_path: str = DVC_LOCK_PATH,
 ) -> dict[str, str]:
-    git_sha = get_git_sha_required()
+    git_sha = get_git_sha()
     dvc_data_hash = _get_dvc_output_hash(dataset_path=dataset_path, dvc_lock_path=dvc_lock_path)
-    # Em DVC, a revisao de dados e normalmente o commit Git que referencia o lockfile.
-    dvc_data_rev = git_sha
+    lineage_complete = git_sha != "unknown"
+    if lineage_complete:
+        # Em DVC, a revisao de dados e normalmente o commit Git que referencia o lockfile.
+        dvc_data_rev = git_sha
+        lineage_alert = ""
+    else:
+        dvc_data_rev = f"dvc-lock-only:{dvc_data_hash[:12]}"
+        lineage_alert = "git_sha_unavailable"
+        logger.warning(
+            "Lineage parcial detectado: git_sha indisponivel; promocao deve ser bloqueada ate haver SHA valido."
+        )
+
     return {
         "git_sha": git_sha,
         "dvc_data_rev": dvc_data_rev,
         "dvc_data_hash": dvc_data_hash,
         "training_data_version": f"{dvc_data_rev}:{dvc_data_hash}",
+        "lineage_complete": str(lineage_complete),
+        "lineage_alert": lineage_alert,
     }
 
 
@@ -1124,6 +1141,8 @@ def main() -> None:
         "git_sha": data_lineage["git_sha"],
         "dvc_data_rev": data_lineage["dvc_data_rev"],
         "dvc_data_hash": data_lineage["dvc_data_hash"],
+        "lineage_complete": data_lineage.get("lineage_complete", "False"),
+        "lineage_alert": data_lineage.get("lineage_alert", ""),
         "fairness_checked": fairness_status["fairness_checked"],
     }
 
@@ -1151,6 +1170,8 @@ def main() -> None:
         "dvc_data_hash": data_lineage["dvc_data_hash"],
         "training_data_version": data_lineage["training_data_version"],
         "git_sha": data_lineage["git_sha"],
+        "lineage_complete": data_lineage.get("lineage_complete", "False"),
+        "lineage_alert": data_lineage.get("lineage_alert", ""),
     }
 
     with mlflow.start_run(run_name=f"{TICKER}_{INTERVAL}_training"):

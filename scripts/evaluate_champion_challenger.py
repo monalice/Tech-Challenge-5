@@ -283,6 +283,31 @@ def _mark_rejected(client: Any, challenger_version: str, reason: str) -> None:
     )
 
 
+def _is_truthy_tag(value: str | None) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _validate_challenger_lineage(client: Any, challenger_run_id: str) -> tuple[bool, str]:
+    """Valida se o challenger possui lineage completo para ser elegível à promoção."""
+    run = client.get_run(challenger_run_id)
+    run_tags = getattr(getattr(run, "data", None), "tags", {}) or {}
+
+    lineage_complete = _is_truthy_tag(run_tags.get("lineage_complete"))
+    git_sha = str(run_tags.get("git_sha", "")).strip().lower()
+
+    if lineage_complete and git_sha and git_sha != "unknown":
+        return True, ""
+
+    reason = (
+        "lineage_incomplete "
+        f"lineage_complete={run_tags.get('lineage_complete', '<missing>')} "
+        f"git_sha={run_tags.get('git_sha', '<missing>')}"
+    )
+    return False, reason
+
+
 def main() -> int:
     """Executa validação Champion-Challenger baseada em AUC + quality gate.
 
@@ -294,6 +319,22 @@ def main() -> int:
         client = mlflow_module.MlflowClient()
 
         challenger_version, challenger_run_id = _resolve_candidate_version(client)
+        lineage_ok, lineage_reason = _validate_challenger_lineage(client, challenger_run_id)
+        if not lineage_ok:
+            _mark_rejected(client, challenger_version, lineage_reason)
+            client.set_model_version_tag(
+                name=MLFLOW_MODEL_NAME,
+                version=challenger_version,
+                key="promotion_gate",
+                value="lineage_incomplete",
+            )
+            logger.info(
+                "REJECTED: challenger not promoted due to incomplete lineage | challenger_version=%s reason=%s",
+                challenger_version,
+                lineage_reason,
+            )
+            return EXIT_NOT_PROMOTED
+
         challenger_model = load_challenger_model_by_run_id(
             mlflow_module=mlflow_module,
             challenger_run_id=challenger_run_id,

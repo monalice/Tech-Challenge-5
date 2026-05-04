@@ -65,6 +65,17 @@ def test_get_git_sha_success(monkeypatch):
     assert tm.get_git_sha() == "abc123"
 
 
+def test_get_git_sha_prefers_env_var(monkeypatch):
+    monkeypatch.setenv("TRAINING_GIT_SHA", "sha-from-env")
+
+    def _fail_subprocess(*args, **kwargs):
+        raise AssertionError("subprocess.run nao deveria ser chamado quando TRAINING_GIT_SHA existe")
+
+    monkeypatch.setattr(tm.subprocess, "run", _fail_subprocess)
+
+    assert tm.get_git_sha() == "sha-from-env"
+
+
 def test_get_git_sha_returns_unknown_on_error(monkeypatch):
     monkeypatch.setattr(
         tm.subprocess,
@@ -490,7 +501,7 @@ stages:
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(tm, "get_git_sha_required", lambda: "gitsha123")
+    monkeypatch.setattr(tm, "get_git_sha", lambda: "gitsha123")
 
     lineage = tm.build_training_data_lineage(
         dataset_path="models/btc_hourly_cache.csv",
@@ -501,6 +512,8 @@ stages:
     assert lineage["dvc_data_rev"] == "gitsha123"
     assert lineage["dvc_data_hash"] == "deadbeefcafebabe1234567890abcdef"
     assert lineage["training_data_version"] == "gitsha123:deadbeefcafebabe1234567890abcdef"
+    assert lineage["lineage_complete"] == "True"
+    assert lineage["lineage_alert"] == ""
 
 
 def test_build_training_data_lineage_fails_when_dataset_hash_not_found(monkeypatch, tmp_path):
@@ -517,7 +530,7 @@ stages:
 """.strip(),
         encoding="utf-8",
     )
-    monkeypatch.setattr(tm, "get_git_sha_required", lambda: "gitsha123")
+    monkeypatch.setattr(tm, "get_git_sha", lambda: "gitsha123")
 
     with pytest.raises(RuntimeError, match="nao encontrado em dvc.lock"):
         tm.build_training_data_lineage(
@@ -531,6 +544,40 @@ def test_build_training_data_lineage_fails_when_git_sha_unavailable(monkeypatch)
 
     with pytest.raises(RuntimeError, match="Falha ao capturar git SHA"):
         tm.get_git_sha_required()
+
+
+def test_build_training_data_lineage_uses_partial_lineage_when_git_sha_unavailable(
+    monkeypatch, tmp_path
+):
+    dvc_lock_path = tmp_path / "dvc.lock"
+    dvc_lock_path.write_text(
+        """
+schema: '2.0'
+stages:
+  prepare_data:
+    outs:
+      - path: models/btc_hourly_cache.csv
+        hash: md5
+        md5: deadbeefcafebabe1234567890abcdef
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tm, "get_git_sha", lambda: "unknown")
+
+    lineage = tm.build_training_data_lineage(
+        dataset_path="models/btc_hourly_cache.csv",
+        dvc_lock_path=str(dvc_lock_path),
+    )
+
+    assert lineage["git_sha"] == "unknown"
+    assert lineage["dvc_data_hash"] == "deadbeefcafebabe1234567890abcdef"
+    assert lineage["dvc_data_rev"] == "dvc-lock-only:deadbeefcafe"
+    assert (
+        lineage["training_data_version"]
+        == "dvc-lock-only:deadbeefcafe:deadbeefcafebabe1234567890abcdef"
+    )
+    assert lineage["lineage_complete"] == "False"
+    assert lineage["lineage_alert"] == "git_sha_unavailable"
 
 
 def test_ensure_directories_creates_models_folder(monkeypatch):
