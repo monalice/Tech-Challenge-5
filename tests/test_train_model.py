@@ -56,6 +56,10 @@ def _valid_mlflow_metadata_tags() -> dict[str, object]:
 
 
 def test_get_git_sha_success(monkeypatch):
+    monkeypatch.delenv("TRAINING_GIT_SHA", raising=False)
+    monkeypatch.delenv("GIT_SHA", raising=False)
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+
     monkeypatch.setattr(
         tm.subprocess,
         "run",
@@ -80,6 +84,10 @@ def test_get_git_sha_prefers_env_var(monkeypatch):
 
 
 def test_get_git_sha_returns_unknown_on_error(monkeypatch):
+    monkeypatch.delenv("TRAINING_GIT_SHA", raising=False)
+    monkeypatch.delenv("GIT_SHA", raising=False)
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+
     monkeypatch.setattr(
         tm.subprocess,
         "run",
