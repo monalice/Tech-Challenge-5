@@ -813,9 +813,9 @@ def log_training_artifacts(
         if S3_MODELS_BUCKET and s3_manager.s3_enabled:
             try:
                 logger.info("Salvando artefatos no S3 bucket: %s", S3_MODELS_BUCKET)
-                s3_manager.save_model(model, "lstm_btc_hourly.keras")
-                s3_manager.save_joblib(scaler_all, "scaler_btc.gz")
-                s3_manager.save_joblib(scaler_return, "scaler_btc_return.gz")
+                s3_manager.save_model(model, "challenger/lstm_btc_hourly.keras")
+                s3_manager.save_joblib(scaler_all, "challenger/scaler_btc.gz")
+                s3_manager.save_joblib(scaler_return, "challenger/scaler_btc_return.gz")
 
                 # Salva metadata como JSON também em S3
                 with tempfile.NamedTemporaryFile(
@@ -829,7 +829,7 @@ def log_training_artifacts(
                     with open(tmp_meta.name, encoding="utf-8") as f:
                         meta_content = f.read()
                     # Salva via S3 usando um método customizado para JSON
-                    key = f"{s3_manager.prefix}/model_metadata_btc.json"
+                    key = f"{s3_manager.prefix}/challenger/model_metadata_btc.json"
                     s3_manager.s3_client.put_object(
                         Bucket=S3_MODELS_BUCKET,
                         Key=key,

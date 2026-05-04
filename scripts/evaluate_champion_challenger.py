@@ -28,6 +28,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
+from src.adapters.ml.s3_model_manager import S3ModelManager
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -55,10 +57,100 @@ HOLDOUT_DATA_PATH = os.getenv(
     "data/processed/champion_challenger_holdout.csv",
 )
 HOLDOUT_TARGET_COLUMN = os.getenv("CHAMPION_CHALLENGER_TARGET_COLUMN", "target")
-MODEL_ARTIFACT_PATH = os.getenv("MLFLOW_MODEL_ARTIFACT_PATH", "model")
 
 _min_improvement_raw = os.getenv("CHAMPION_MIN_IMPROVEMENT", "0.005")
 MIN_IMPROVEMENT: float = float(_min_improvement_raw)
+
+# ---------------------------------------------------------------------------
+# S3 model paths
+# ---------------------------------------------------------------------------
+S3_MODELS_BUCKET = os.getenv("S3_MODELS_BUCKET", "").strip()
+S3_CHAMPION_PREFIX = "champion"
+S3_CHALLENGER_PREFIX = "challenger"
+S3_MODEL_FILENAME = "lstm_btc_hourly.keras"
+S3_SCALER_FILENAMES = ["scaler_btc.gz", "scaler_btc_return.gz", "model_metadata_btc.json"]
+
+
+def _create_s3_manager() -> S3ModelManager:
+    """Cria instância de S3ModelManager para o bucket de modelos.
+
+    Raises:
+        RuntimeError: Se S3_MODELS_BUCKET não estiver configurado.
+    """
+    if not S3_MODELS_BUCKET:
+        raise RuntimeError("S3_MODELS_BUCKET não definido; não é possível carregar modelos do S3.")
+    return S3ModelManager(bucket_name=S3_MODELS_BUCKET)
+
+
+def load_challenger_from_s3(s3_manager: S3ModelManager) -> Any:
+    """Carrega o modelo challenger diretamente do S3.
+
+    Args:
+        s3_manager: Instância de S3ModelManager.
+
+    Returns:
+        Modelo Keras carregado.
+
+    Raises:
+        RuntimeError: Se o challenger não for encontrado em S3.
+    """
+    path = f"{S3_CHALLENGER_PREFIX}/{S3_MODEL_FILENAME}"
+    try:
+        model = s3_manager.load_model(path)
+        logger.info("Challenger carregado de S3: %s/%s", S3_MODELS_BUCKET, path)
+        return model
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Challenger não encontrado em S3: {S3_MODELS_BUCKET}/models/{path}"
+        ) from exc
+
+
+def load_champion_from_s3(s3_manager: S3ModelManager) -> Any | None:
+    """Carrega o modelo champion diretamente do S3.
+
+    Args:
+        s3_manager: Instância de S3ModelManager.
+
+    Returns:
+        Modelo Keras carregado, ou None se ainda não houver champion em produção.
+    """
+    path = f"{S3_CHAMPION_PREFIX}/{S3_MODEL_FILENAME}"
+    try:
+        model = s3_manager.load_model(path)
+        logger.info("Champion carregado de S3: %s/%s", S3_MODELS_BUCKET, path)
+        return model
+    except FileNotFoundError:
+        logger.info(
+            "Nenhum champion encontrado em S3 (%s/models/%s); auto-promoção.",
+            S3_MODELS_BUCKET,
+            path,
+        )
+        return None
+
+
+def promote_artifacts_s3(s3_manager: S3ModelManager) -> None:
+    """Copia artefatos do prefixo challenger para champion no mesmo bucket S3.
+
+    Args:
+        s3_manager: Instância de S3ModelManager.
+    """
+    files = [S3_MODEL_FILENAME, *S3_SCALER_FILENAMES]
+    promoted: list[str] = []
+    for filename in files:
+        src_key = s3_manager._s3_key(f"{S3_CHALLENGER_PREFIX}/{filename}")
+        dst_key = s3_manager._s3_key(f"{S3_CHAMPION_PREFIX}/{filename}")
+        try:
+            s3_manager.copy_object(src_key, dst_key)
+            promoted.append(filename)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Falha ao copiar %s para champion (ignorado): %s", filename, exc)
+    logger.info(
+        "Promoção S3 concluída: %d/%d arquivos copiados de '%s' para '%s'.",
+        len(promoted),
+        len(files),
+        S3_CHALLENGER_PREFIX,
+        S3_CHAMPION_PREFIX,
+    )
 
 
 def _configure_mlflow() -> Any:
@@ -103,68 +195,6 @@ def _resolve_candidate_version(client: Any) -> tuple[str, str]:
     run_id = str(model_version.run_id)
     logger.info("Challenger identificado: version=%s run_id=%s", version, run_id)
     return version, run_id
-
-
-def download_champion_model_from_registry(
-    *,
-    mlflow_module: Any,
-    model_name: str,
-    production_alias: str,
-) -> tuple[Any, str, str]:
-    """Faz download do Champion em produção via Model Registry do MLflow.
-
-    Args:
-        mlflow_module: Módulo ``mlflow`` já configurado no tracking URI.
-        model_name: Nome do modelo registrado.
-        production_alias: Alias que representa produção (ex.: ``Production``).
-
-    Returns:
-        Tupla ``(champion_model, champion_version, champion_run_id)``.
-
-    Raises:
-        RuntimeError: Se não houver Champion em produção ou se o download falhar.
-    """
-    client = mlflow_module.MlflowClient()
-    try:
-        champion_version = client.get_model_version_by_alias(model_name, production_alias)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Champion de produção não encontrado no alias '{production_alias}': {exc}"
-        ) from exc
-
-    uri = f"models:/{model_name}@{production_alias}"
-    try:
-        champion_model = mlflow_module.pyfunc.load_model(uri)
-    except Exception as exc:
-        raise RuntimeError(f"Falha ao carregar Champion em '{uri}': {exc}") from exc
-
-    return champion_model, str(champion_version.version), str(champion_version.run_id)
-
-
-def load_challenger_model_by_run_id(
-    *,
-    mlflow_module: Any,
-    challenger_run_id: str,
-    model_artifact_path: str,
-) -> Any:
-    """Carrega o Challenger recém-treinado a partir do run_id.
-
-    Args:
-        mlflow_module: Módulo ``mlflow`` configurado.
-        challenger_run_id: Run ID do challenger.
-        model_artifact_path: Caminho do artefato do modelo dentro do run.
-
-    Returns:
-        Modelo carregado via ``mlflow.pyfunc``.
-
-    Raises:
-        RuntimeError: Se o modelo não puder ser carregado.
-    """
-    uri = f"runs:/{challenger_run_id}/{model_artifact_path}"
-    try:
-        return mlflow_module.pyfunc.load_model(uri)
-    except Exception as exc:
-        raise RuntimeError(f"Falha ao carregar Challenger em '{uri}': {exc}") from exc
 
 
 def _load_holdout_dataset(path: str, target_column: str) -> tuple[pd.DataFrame, np.ndarray]:
@@ -336,11 +366,11 @@ def main() -> int:
             )
             return EXIT_NOT_PROMOTED
 
-        challenger_model = load_challenger_model_by_run_id(
-            mlflow_module=mlflow_module,
-            challenger_run_id=challenger_run_id,
-            model_artifact_path=MODEL_ARTIFACT_PATH,
-        )
+        s3_manager = _create_s3_manager()
+
+        # Carrega modelos diretamente do S3 (fonte de verdade)
+        challenger_model = load_challenger_from_s3(s3_manager)
+        champion_model = load_champion_from_s3(s3_manager)  # None se não há champion ainda
 
         X_holdout, y_holdout = _load_holdout_dataset(
             path=HOLDOUT_DATA_PATH,
@@ -350,22 +380,13 @@ def main() -> int:
         challenger_scores = _predict_scores(challenger_model, X_holdout)
         challenger_auc = float(roc_auc_score(y_holdout, challenger_scores))
 
-        # Tenta champion em produção; se não houver, promove challenger automaticamente.
         champion_auc: float | None = None
-        champion_version: str | None = None
-        champion_run_id: str | None = None
-        try:
-            champion_model, champion_version, champion_run_id = (
-                download_champion_model_from_registry(
-                    mlflow_module=mlflow_module,
-                    model_name=MLFLOW_MODEL_NAME,
-                    production_alias=PRODUCTION_ALIAS,
-                )
-            )
+        if champion_model is not None:
             champion_scores = _predict_scores(champion_model, X_holdout)
             champion_auc = float(roc_auc_score(y_holdout, champion_scores))
             delta_auc = challenger_auc - champion_auc
-        except RuntimeError:
+        else:
+            # Sem champion em produção: auto-promoção do primeiro modelo
             delta_auc = float("inf")
 
         logger.info(
@@ -377,9 +398,13 @@ def main() -> int:
         )
 
         if delta_auc >= MIN_IMPROVEMENT:
+            # 1. Copia artefatos challenger → champion no S3
+            promote_artifacts_s3(s3_manager)
+            # 2. Atualiza alias no MLflow Registry para governança
             _promote_to_production_alias(client, challenger_version, float(delta_auc))
             logger.info(
-                "APPROVED: challenger promoted to alias '%s' | challenger_version=%s",
+                "APPROVED: challenger promoted to champion "
+                "(S3 + MLflow alias '%s') | challenger_version=%s",
                 PRODUCTION_ALIAS,
                 challenger_version,
             )

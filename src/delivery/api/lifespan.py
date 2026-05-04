@@ -25,13 +25,15 @@ MODEL_META_PATH = "models/model_metadata_btc.json"
 S3_MODELS_BUCKET = os.getenv("S3_MODELS_BUCKET", "").strip()
 s3_manager = S3ModelManager(bucket_name=S3_MODELS_BUCKET if S3_MODELS_BUCKET else None)
 
+# Prefixo S3 do modelo em produção (champion)
+_S3_CHAMPION_PREFIX = "champion"
+
 
 def _try_load_optional_scaler(scaler_path: str) -> bool:
     """Verifica se o scaler opcional existe (local ou S3)."""
     if S3_MODELS_BUCKET and s3_manager.s3_enabled:
-        # Para S3, tentamos carregar e captamos exceção
         try:
-            s3_manager.load_joblib(scaler_path.split("/")[-1])
+            s3_manager.load_joblib(f"{_S3_CHAMPION_PREFIX}/{scaler_path.split('/')[-1]}")
             return True
         except FileNotFoundError:
             return False
@@ -44,14 +46,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     validate_bedrock_configuration_for_startup()
     logger.info("Carregando modelo LSTM Hourly e scaler...")
     try:
-        _model = load_trained_model(MODEL_PATH)
         if S3_MODELS_BUCKET and s3_manager.s3_enabled:
-            _scaler = s3_manager.load_joblib(SCALER_PATH.split("/")[-1])
+            _model = s3_manager.load_model(f"{_S3_CHAMPION_PREFIX}/lstm_btc_hourly.keras")
+            _scaler = s3_manager.load_joblib(f"{_S3_CHAMPION_PREFIX}/{SCALER_PATH.split('/')[-1]}")
         else:
+            _model = load_trained_model(MODEL_PATH)
             _scaler = joblib.load(SCALER_PATH)
         _scaler_return = (
             (
-                s3_manager.load_joblib(SCALER_RETURN_PATH.split("/")[-1])
+                s3_manager.load_joblib(f"{_S3_CHAMPION_PREFIX}/{SCALER_RETURN_PATH.split('/')[-1]}")
                 if S3_MODELS_BUCKET and s3_manager.s3_enabled
                 else joblib.load(SCALER_RETURN_PATH)
             )

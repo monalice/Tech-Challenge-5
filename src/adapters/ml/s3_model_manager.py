@@ -274,3 +274,22 @@ class S3ModelManager:
         obj = joblib.load(local_path)
         logger.info("Joblib carregado localmente: %s", local_path)
         return obj
+
+    def copy_object(self, src_key: str, dst_key: str) -> None:
+        """Copia um objeto dentro do mesmo bucket S3 (sem re-download).
+
+        Args:
+            src_key: Chave S3 de origem.
+            dst_key: Chave S3 de destino.
+
+        Raises:
+            RuntimeError: Se S3 não estiver habilitado.
+        """
+        if not self.s3_enabled:
+            raise RuntimeError("S3 não habilitado; cópia interna impossível.")
+        self.s3_client.copy_object(
+            CopySource={"Bucket": self.bucket_name, "Key": src_key},
+            Bucket=self.bucket_name,
+            Key=dst_key,
+        )
+        logger.info("S3 copy: %s/%s → %s/%s", self.bucket_name, src_key, self.bucket_name, dst_key)

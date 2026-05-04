@@ -123,8 +123,18 @@ resource "aws_sfn_state_machine" "drift_retrain" {
         Choices = [
           {
             Variable      = "$.evaluation_error.Cause"
+            StringMatches = "*\"ExitCode\":10*"
+            Next          = "ModelRejected"
+          },
+          {
+            Variable      = "$.evaluation_error.Cause"
             StringMatches = "*\"exitCode\":10*"
             Next          = "ModelRejected"
+          },
+          {
+            Variable      = "$.evaluation_error.Cause"
+            StringMatches = "*\"ExitCode\":1*"
+            Next          = "EvaluationFailed"
           },
           {
             Variable      = "$.evaluation_error.Cause"
