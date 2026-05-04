@@ -2,7 +2,7 @@
 
 ## Visão Geral
 
-Os modelos treinados agora são persistidos automaticamente em um bucket AWS S3 (`tech-challenge-5-trained-models`), além do armazenamento local de fallback e do registro no MLflow.
+Os modelos treinados agora são persistidos automaticamente em um bucket AWS S3 (`tech-challenge-5-dev-artifacts-db6c23fb`), além do armazenamento local de fallback e do registro no MLflow.
 
 **Fluxo:**
 
@@ -40,7 +40,7 @@ Defina em `.env` ou secretos do ambiente:
 
 ```bash
 # Bucket S3 para modelos treinados (obrigatório para usar S3)
-S3_MODELS_BUCKET=tech-challenge-5-trained-models
+S3_MODELS_BUCKET=tech-challenge-5-dev-artifacts-db6c23fb
 
 # Credenciais AWS (use uma das opções abaixo)
 # Opção 1: Credenciais explícitas (dev/teste)
@@ -58,7 +58,7 @@ AWS_DEFAULT_REGION=us-east-1
 
 ```dockerfile
 # Dockerfile já instala boto3 via requirements.txt
-ENV S3_MODELS_BUCKET=tech-challenge-5-trained-models
+ENV S3_MODELS_BUCKET=tech-challenge-5-dev-artifacts-db6c23fb
 # IAM role configurada no ECS task definition
 ```
 
@@ -68,7 +68,7 @@ ENV S3_MODELS_BUCKET=tech-challenge-5-trained-models
 services:
   api:
     environment:
-      S3_MODELS_BUCKET: tech-challenge-5-trained-models
+      S3_MODELS_BUCKET: tech-challenge-5-dev-artifacts-db6c23fb
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_DEFAULT_REGION: us-east-1
@@ -118,7 +118,7 @@ Se `S3_MODELS_BUCKET` está vazio ou indefinido:
 ## Estrutura do Bucket S3
 
 ```
-tech-challenge-5-trained-models/
+tech-challenge-5-dev-artifacts-db6c23fb/
 ├── models/
 │   ├── lstm_btc_hourly.keras           # Modelo Keras
 │   ├── scaler_btc.gz                   # Scaler features
@@ -142,7 +142,7 @@ Para produção (ECS task role), adicione policy:
         "s3:PutObject",
         "s3:DeleteObject"
       ],
-      "Resource": "arn:aws:s3:::tech-challenge-5-trained-models/models/*"
+      "Resource": "arn:aws:s3:::tech-challenge-5-dev-artifacts-db6c23fb/models/*"
     }
   ]
 }
