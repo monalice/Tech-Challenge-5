@@ -26,6 +26,7 @@ s3_manager = S3ModelManager(bucket_name=S3_MODELS_BUCKET if S3_MODELS_BUCKET els
 
 # Prefixo S3 do modelo em produção (champion)
 _S3_CHAMPION_PREFIX = "champion"
+_S3_CHALLENGER_PREFIX = "challenger"
 STRICT_ARTIFACT_STARTUP = os.getenv("STRICT_ARTIFACT_STARTUP", "false").strip().lower() in {
     "1",
     "true",
@@ -36,11 +37,14 @@ STRICT_ARTIFACT_STARTUP = os.getenv("STRICT_ARTIFACT_STARTUP", "false").strip().
 def _try_load_optional_scaler(scaler_path: str) -> bool:
     """Verifica se o scaler opcional existe (local ou S3)."""
     if S3_MODELS_BUCKET and s3_manager.s3_enabled:
-        try:
-            s3_manager.load_joblib(f"{_S3_CHAMPION_PREFIX}/{scaler_path.split('/')[-1]}")
-            return True
-        except FileNotFoundError:
-            return False
+        file_name = scaler_path.split("/")[-1]
+        for prefix in (_S3_CHAMPION_PREFIX, _S3_CHALLENGER_PREFIX):
+            try:
+                s3_manager.load_joblib(f"{prefix}/{file_name}")
+                return True
+            except FileNotFoundError:
+                continue
+        return False
     # Fallback local
     return os.path.exists(scaler_path)
 
@@ -50,15 +54,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     validate_bedrock_configuration_for_startup()
     logger.info("Carregando modelo LSTM Hourly e scaler...")
     try:
+        artifact_prefix = _S3_CHAMPION_PREFIX
         if S3_MODELS_BUCKET and s3_manager.s3_enabled:
-            _model = s3_manager.load_model(f"{_S3_CHAMPION_PREFIX}/lstm_btc_hourly.keras")
-            _scaler = s3_manager.load_joblib(f"{_S3_CHAMPION_PREFIX}/{SCALER_PATH.split('/')[-1]}")
+            try:
+                _model = s3_manager.load_model(f"{_S3_CHAMPION_PREFIX}/lstm_btc_hourly.keras")
+                _scaler = s3_manager.load_joblib(
+                    f"{_S3_CHAMPION_PREFIX}/{SCALER_PATH.split('/')[-1]}"
+                )
+            except FileNotFoundError:
+                artifact_prefix = _S3_CHALLENGER_PREFIX
+                logger.warning(
+                    "Champion não encontrado em S3; usando challenger como fallback temporário."
+                )
+                _model = s3_manager.load_model(f"{artifact_prefix}/lstm_btc_hourly.keras")
+                _scaler = s3_manager.load_joblib(
+                    f"{artifact_prefix}/{SCALER_PATH.split('/')[-1]}"
+                )
         else:
             _model = load_trained_model(MODEL_PATH)
             _scaler = joblib.load(SCALER_PATH)
         _scaler_return = (
             (
-                s3_manager.load_joblib(f"{_S3_CHAMPION_PREFIX}/{SCALER_RETURN_PATH.split('/')[-1]}")
+                s3_manager.load_joblib(f"{artifact_prefix}/{SCALER_RETURN_PATH.split('/')[-1]}")
                 if S3_MODELS_BUCKET and s3_manager.s3_enabled
                 else joblib.load(SCALER_RETURN_PATH)
             )
@@ -69,7 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             if S3_MODELS_BUCKET and s3_manager.s3_enabled:
                 meta_key = s3_manager._s3_key(
-                    f"{_S3_CHAMPION_PREFIX}/{MODEL_META_PATH.split('/')[-1]}"
+                    f"{artifact_prefix}/{MODEL_META_PATH.split('/')[-1]}"
                 )
                 meta_response = s3_manager.s3_client.get_object(
                     Bucket=S3_MODELS_BUCKET,

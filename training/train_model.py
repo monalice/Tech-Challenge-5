@@ -711,6 +711,13 @@ def register_challenger_initial_state(registered_model_version: str) -> str:
         alias=alias,
         version=registered_model_version,
     )
+    # Garante compatibilidade com o avaliador no Step Functions, que resolve
+    # o challenger pelo alias CANDIDATE_ALIAS.
+    client.set_registered_model_alias(
+        name=MLFLOW_MODEL_NAME,
+        alias=CANDIDATE_ALIAS,
+        version=registered_model_version,
+    )
     client.set_model_version_tag(
         name=MLFLOW_MODEL_NAME,
         version=registered_model_version,
@@ -730,8 +737,10 @@ def register_challenger_initial_state(registered_model_version: str) -> str:
         value="pending_evaluation",
     )
     logger.info(
-        "Modelo registrado sem promoção automática. Alias inicial '%s' para versão %s.",
+        "Modelo registrado sem promoção automática. "
+        "Alias inicial '%s' e alias '%s' para versão %s.",
         alias,
+        CANDIDATE_ALIAS,
         registered_model_version,
     )
     return alias

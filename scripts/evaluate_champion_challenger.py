@@ -51,6 +51,7 @@ MLFLOW_MODEL_NAME = os.getenv("MLFLOW_MODEL_NAME", "btc_hourly_forecaster")
 CHAMPION_ALIAS = os.getenv("MLFLOW_CHAMPION_ALIAS", "champion")
 CANDIDATE_ALIAS = os.getenv("MLFLOW_CANDIDATE_ALIAS", "candidate")
 PRODUCTION_ALIAS = os.getenv("MLFLOW_PRODUCTION_ALIAS", "Production")
+FALLBACK_CANDIDATE_ALIASES = ["Staging", "challenger"]
 
 HOLDOUT_DATA_PATH = os.getenv(
     "CHAMPION_CHALLENGER_HOLDOUT_PATH",
@@ -184,16 +185,35 @@ def _resolve_candidate_version(client: Any) -> tuple[str, str]:
     Raises:
         RuntimeError: Se o alias de candidato não existir.
     """
-    try:
-        model_version = client.get_model_version_by_alias(MLFLOW_MODEL_NAME, CANDIDATE_ALIAS)
-    except Exception as exc:
+    aliases_to_try: list[str] = [CANDIDATE_ALIAS, *FALLBACK_CANDIDATE_ALIASES]
+    # Remove duplicatas preservando ordem
+    aliases_to_try = list(dict.fromkeys(aliases_to_try))
+
+    model_version = None
+    used_alias = ""
+    last_error: Exception | None = None
+    for alias in aliases_to_try:
+        try:
+            model_version = client.get_model_version_by_alias(MLFLOW_MODEL_NAME, alias)
+            used_alias = alias
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+
+    if model_version is None:
         raise RuntimeError(
-            f"Alias '{CANDIDATE_ALIAS}' não encontrado para '{MLFLOW_MODEL_NAME}': {exc}"
-        ) from exc
+            "Nenhum alias de challenger encontrado para "
+            f"'{MLFLOW_MODEL_NAME}'. Tentados: {aliases_to_try}. Último erro: {last_error}"
+        ) from last_error
 
     version = str(model_version.version)
     run_id = str(model_version.run_id)
-    logger.info("Challenger identificado: version=%s run_id=%s", version, run_id)
+    logger.info(
+        "Challenger identificado via alias '%s': version=%s run_id=%s",
+        used_alias,
+        version,
+        run_id,
+    )
     return version, run_id
 
 
