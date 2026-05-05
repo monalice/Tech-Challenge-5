@@ -15,6 +15,7 @@ joblib
 requests
 matplotlib
 prometheus-client
+prometheus-fastapi-instrumentator
 mlflow
 boto3
 langchain

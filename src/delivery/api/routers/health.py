@@ -7,7 +7,7 @@ from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 import src.delivery.api.dependencies as _deps
-from src.adapters.observability.prometheus import METRIC_CPU, METRIC_MEMORY, _prom_registry
+from src.adapters.observability.prometheus import METRIC_CPU, METRIC_MEMORY
 from src.delivery.api.schemas import HealthResponse, LiveResponse
 from src.domain.ports import LoadedArtifacts
 from src.use_cases.health_check import perform_health_checks
@@ -63,6 +63,6 @@ def prometheus_metrics() -> PlainTextResponse:
     METRIC_CPU.set(psutil.cpu_percent())
     METRIC_MEMORY.set(psutil.virtual_memory().percent)
     return PlainTextResponse(
-        content=generate_latest(_prom_registry).decode("utf-8"),
+        content=generate_latest().decode("utf-8"),
         media_type=CONTENT_TYPE_LATEST,
     )

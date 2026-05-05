@@ -67,3 +67,8 @@ output "github_actions_deploy_role_arn" {
   description = "IAM role ARN to configure in GitHub as AWS_ROLE_TO_ASSUME"
   value       = aws_iam_role.github_actions_deploy.arn
 }
+
+output "grafana_url" {
+  description = "Grafana dashboard URL — login with admin / grafana_admin_password variable"
+  value       = "http://${aws_lb.app.dns_name}:3000"
+}

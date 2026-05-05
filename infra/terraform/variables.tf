@@ -140,6 +140,29 @@ variable "mlflow_model_name" {
   default     = "btc_hourly_forecaster"
 }
 
+# ---------------------------------------------------------------------------
+# Monitoring stack (Prometheus + Grafana)
+# ---------------------------------------------------------------------------
+
+variable "grafana_admin_password" {
+  description = "Admin password for Grafana. Overwrite in terraform.tfvars — never commit the real value."
+  type        = string
+  sensitive   = true
+  default     = "StockCast@Monitor2026"
+}
+
+variable "monitoring_task_cpu" {
+  description = "Fargate CPU units for the monitoring task (Prometheus + Grafana). 1024 = 1 vCPU."
+  type        = number
+  default     = 1024
+}
+
+variable "monitoring_task_memory" {
+  description = "Memory (MiB) for the monitoring task. Must be compatible with monitoring_task_cpu."
+  type        = number
+  default     = 2048
+}
+
 variable "mlflow_champion_alias" {
   description = "MLflow alias that identifies the production champion model"
   type        = string

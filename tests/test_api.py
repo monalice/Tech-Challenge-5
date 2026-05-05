@@ -98,6 +98,22 @@ def test_health_returns_200(monkeypatch):
     assert "market_data_accessible" in body
 
 
+def test_metrics_endpoint_exposes_prometheus_metrics(monkeypatch):
+    monkeypatch.setattr(_lifespan_module, "load_trained_model", lambda _: _DummyModel())
+    monkeypatch.setattr(_lifespan_module.joblib, "load", lambda _: _DummyScaler())
+    monkeypatch.setattr(
+        _dep_module, "download_with_retry", lambda ticker: (_mock_market_df(), "test")
+    )
+
+    with TestClient(app_module.app) as client:
+        client.get("/live")
+        response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert "stockcast_cpu_usage_percent" in response.text
+    assert "http_requests_total" in response.text
+
+
 def test_lifespan_loads_champion_artifacts_from_s3(monkeypatch):
     fake_s3_manager = _FakeS3Manager()
     monkeypatch.setattr(_lifespan_module, "S3_MODELS_BUCKET", "fake-bucket")

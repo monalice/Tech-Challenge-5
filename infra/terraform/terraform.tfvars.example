@@ -19,3 +19,10 @@ drift_schedule_expression = "cron(0 3 * * ? *)"
 drift_ticker              = "BTC-USD"
 llm_metrics_namespace     = "StockCast/LLM"
 llm_alarm_email           = "mlops-alerts@example.com"
+
+# ---------------------------------------------------------------------------
+# Monitoring stack (Prometheus + Grafana)
+# ---------------------------------------------------------------------------
+grafana_admin_password  = "CHANGE_ME_STRONG_PASSWORD"
+monitoring_task_cpu     = 1024
+monitoring_task_memory  = 2048

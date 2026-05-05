@@ -4,6 +4,7 @@ import os
 import joblib  # noqa: F401 — exposto para monkeypatch em tests: app_module.joblib
 import uvicorn
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # --- Backward-compat re-exports (acessados via `from src import app as app_module`) ---
 from src.adapters.ml.model_loader import load_trained_model  # noqa: F401
@@ -73,6 +74,11 @@ logging.basicConfig(
 )
 
 app = FastAPI(title="Bitcoin Hourly Forecaster", version="3.0.0", lifespan=lifespan)
+Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+    excluded_handlers=["/metrics"],
+).instrument(app)
 app.include_router(health.router)
 app.include_router(predict.router)
 app.include_router(chat.router)
