@@ -3,87 +3,16 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [main, develop]
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'monitoring/**'
 
 jobs:
   ci:
-    name: CI - Lint, Type Check, Security, Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.eval.txt
-          pip install ruff mypy bandit pytest pytest-cov
-
-      - name: Optional DVC pull for test data
-        env:
-          DVC_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          DVC_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          DVC_AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
-        run: |
-          if [ ! -f dvc.yaml ]; then
-            echo "dvc.yaml não encontrado; seguindo sem dvc pull."
-            exit 0
-          fi
-
-          if [ -z "${AWS_ACCESS_KEY_ID}" ] || [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then
-            echo "Credenciais DVC ausentes. Seguindo com fixtures locais versionadas."
-            exit 0
-          fi
-
-          AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-${DVC_AWS_DEFAULT_REGION:-us-east-1}}"
-          DVC_AWS_DEFAULT_REGION="${DVC_AWS_DEFAULT_REGION:-$AWS_DEFAULT_REGION}"
-          export AWS_DEFAULT_REGION DVC_AWS_DEFAULT_REGION
-          echo "Usando região AWS para DVC: ${DVC_AWS_DEFAULT_REGION}"
-
-          echo "Credenciais DVC detectadas. Executando dvc pull antes dos testes..."
-          pip install dvc[s3]
-          if ! dvc pull --force; then
-            echo "dvc pull falhou; seguindo com fallback determinístico de testes."
-          fi
-
-      - name: Lint (ruff)
-        run: ruff check .
-
-      - name: Type check (mypy)
-        run: |
-          python -m mypy \
-            src/app.py \
-            training/train_model.py \
-            src/agent/rag_pipeline.py \
-            src/agent/react_agent.py \
-            src/security/guardrails.py \
-            monitoring/drift_detection.py \
-            --explicit-package-bases
-
-      - name: Security scan (bandit)
-        run: bandit -r src monitoring -ll
-
-      - name: Test (pytest + coverage gate)
-        env:
-          TF_ENABLE_ONEDNN_OPTS: "0"
-          TF_CPP_MIN_LOG_LEVEL: "2"
-          BEDROCK_AWS_REGION: "us-east-1"
-        run: pytest --cov=src --cov=monitoring --cov-config=.coveragerc --cov-report=term-missing --cov-fail-under=60
+    uses: ./.github/workflows/ci_common.yml
+    concurrency:
+      group: ci-cd-ci-${{ github.ref }}
+      cancel-in-progress: true
+    with:
+      bedrock_aws_region: "us-east-1"
+    secrets: inherit
 
   cd:
     name: CD - Build, Push ECR, Deploy ECS
@@ -106,15 +35,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve target environment
-        id: target-env
-        run: |
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            echo "name=prod" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=dev" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Validate deployment variables
         run: |
           missing=0
@@ -135,7 +55,7 @@ jobs:
             exit 1
           fi
 
-          echo "Deploy target environment: ${{ steps.target-env.outputs.name }}"
+          echo "Deploy target environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}"
           echo "AWS region: $AWS_REGION"
           echo "ECR repository: $ECR_REPOSITORY"
           echo "ECS cluster: $ECS_CLUSTER_NAME"
