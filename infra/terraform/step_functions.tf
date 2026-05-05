@@ -1,17 +1,22 @@
 # ---------------------------------------------------------------------------
 # Champion-Challenger Orchestration — AWS Step Functions (ASL)
 #
-# Fluxo de retreino desacoplado (MLOps Nível 2, sem SPOF):
+# Fluxo de drift + retreino desacoplado (MLOps Nível 2, sem SPOF):
 #
-#   EventBridge → TrainChallenger(ECS)
+#   EventBridge → RunDriftDetection(ECS)
 #                     ↓
-#                 EvaluateChampionChallenger(ECS)
-#                    (resolve challenger pelo alias no Model Registry)
-#                     ↓
-#                 Choice por exit code
-#                     ├─ exit 0  -> EvaluationPassed (Success)
-#                     ├─ exit 10 -> ModelRejected (Fail)
-#                     └─ exit 1  -> EvaluationFailed (Fail)
+#                 Choice por exit code do script
+#                     ├─ exit 0  -> NoRetrainNeeded (Success)
+#                     ├─ exit 20 -> TrainChallenger(ECS)
+#                     └─ exit 2  -> DriftDetectionFailed (Fail)
+#                                    ↓
+#                              EvaluateChampionChallenger(ECS)
+#                                 (resolve challenger pelo alias no Model Registry)
+#                                    ↓
+#                              Choice por exit code
+#                                  ├─ exit 0  -> EvaluationPassed (Success)
+#                                  ├─ exit 10 -> ModelRejected (Fail)
+#                                  └─ exit 1  -> EvaluationFailed (Fail)
 #
 # Observação de integração:
 #   - `ecs:runTask.sync` retorna metadados da task ECS (não o stdout do container).
@@ -33,10 +38,80 @@ resource "aws_sfn_state_machine" "drift_retrain" {
   role_arn = aws_iam_role.sfn_drift_retrain.arn
 
   definition = jsonencode({
-    Comment = "Champion-Challenger retraining workflow with strict evaluation gate"
-    StartAt = "TrainChallenger"
+    Comment = "Scheduled drift detection workflow that retrains only after PSI threshold breach"
+    StartAt = "RunDriftDetection"
 
     States = {
+
+      RunDriftDetection = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::ecs:runTask.sync"
+        Parameters = {
+          LaunchType           = "FARGATE"
+          Cluster              = aws_ecs_cluster.main.arn
+          TaskDefinition       = aws_ecs_task_definition.training.arn
+          NetworkConfiguration = local.sfn_network_config
+          Overrides = {
+            ContainerOverrides = [
+              {
+                Name    = "training"
+                Command = ["python", "-u", "scripts/run_drift_scheduler.py"]
+                Environment = [
+                  {
+                    Name  = "DRIFT_AUTOMATION_API_URL"
+                    Value = "http://${aws_lb.app.dns_name}"
+                  },
+                  {
+                    Name  = "DRIFT_AUTOMATION_TICKER"
+                    Value = var.drift_ticker
+                  }
+                ]
+              }
+            ]
+          }
+        }
+        ResultPath = "$.drift"
+        Next       = "NoRetrainNeeded"
+        Catch = [
+          {
+            ErrorEquals = ["States.TaskFailed"]
+            ResultPath  = "$.drift_error"
+            Next        = "DriftDecision"
+          }
+        ]
+      }
+
+      DriftDecision = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable      = "$.drift_error.Cause"
+            StringMatches = "*\"ExitCode\":20*"
+            Next          = "TrainChallenger"
+          },
+          {
+            Variable      = "$.drift_error.Cause"
+            StringMatches = "*\"exitCode\":20*"
+            Next          = "TrainChallenger"
+          },
+          {
+            Variable      = "$.drift_error.Cause"
+            StringMatches = "*\"ExitCode\":2*"
+            Next          = "DriftDetectionFailed"
+          },
+          {
+            Variable      = "$.drift_error.Cause"
+            StringMatches = "*\"exitCode\":2*"
+            Next          = "DriftDetectionFailed"
+          }
+        ]
+        Default = "DriftDetectionFailed"
+      }
+
+      NoRetrainNeeded = {
+        Type    = "Succeed"
+        Comment = "Drift abaixo do threshold de retrain; workflow encerrado sem treino."
+      }
 
       TrainChallenger = {
         Type     = "Task"
@@ -160,6 +235,12 @@ resource "aws_sfn_state_machine" "drift_retrain" {
         Type  = "Fail"
         Error = "TrainingError"
         Cause = "O treinamento do challenger falhou. Verifique os logs do ECS em /ecs/${local.name_prefix}/training."
+      }
+
+      DriftDetectionFailed = {
+        Type  = "Fail"
+        Error = "DriftDetectionError"
+        Cause = "A etapa agendada de detecção de drift falhou antes de decidir pelo retreinamento. Verifique os logs do ECS em /ecs/${local.name_prefix}/training."
       }
 
       EvaluationFailed = {

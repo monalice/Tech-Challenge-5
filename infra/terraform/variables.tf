@@ -85,7 +85,7 @@ variable "health_check_path" {
 variable "drift_schedule_expression" {
   description = "EventBridge cron/rate expression for daily drift workflow"
   type        = string
-  default     = "cron(0 3 * * ? *)"
+  default     = "cron(0 * * * ? *)"
 }
 
 variable "drift_ticker" {

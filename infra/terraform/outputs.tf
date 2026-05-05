@@ -45,7 +45,7 @@ output "drift_retrain_state_machine_arn" {
 
 output "drift_schedule_rule_name" {
   description = "EventBridge rule that triggers the daily drift workflow"
-  value       = aws_cloudwatch_event_rule.daily_drift_workflow.name
+  value       = aws_cloudwatch_event_rule.hourly_drift_workflow.name
 }
 
 output "llm_degradation_sns_topic_arn" {
