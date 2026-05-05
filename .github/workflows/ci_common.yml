@@ -1,0 +1,84 @@
+name: CI (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      bedrock_aws_region:
+        description: Optional BEDROCK_AWS_REGION value for tests
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  ci:
+    name: CI - Lint, Type Check, Security, Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.eval.txt
+          pip install ruff mypy bandit pytest pytest-cov dvc[s3]
+
+      - name: Optional DVC pull for test data
+        env:
+          DVC_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          DVC_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          DVC_AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          if [ ! -f dvc.yaml ]; then
+            echo "dvc.yaml não encontrado; seguindo sem dvc pull."
+            exit 0
+          fi
+
+          if [ -z "${AWS_ACCESS_KEY_ID}" ] || [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then
+            echo "Credenciais DVC ausentes. Seguindo com fixtures locais versionadas."
+            exit 0
+          fi
+
+          AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-${DVC_AWS_DEFAULT_REGION:-us-east-1}}"
+          DVC_AWS_DEFAULT_REGION="${DVC_AWS_DEFAULT_REGION:-$AWS_DEFAULT_REGION}"
+          export AWS_DEFAULT_REGION DVC_AWS_DEFAULT_REGION
+          echo "Usando região AWS para DVC: ${DVC_AWS_DEFAULT_REGION}"
+
+          echo "Credenciais DVC detectadas. Executando dvc pull antes dos testes..."
+          if ! dvc pull --force; then
+            echo "dvc pull falhou; seguindo com fallback determinístico de testes."
+          fi
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy)
+        run: |
+          python -m mypy \
+            src/app.py \
+            training/train_model.py \
+            src/agent/rag_pipeline.py \
+            src/agent/react_agent.py \
+            src/security/guardrails.py \
+            monitoring/drift_detection.py \
+            --explicit-package-bases
+
+      - name: Security scan (bandit)
+        run: bandit -r src monitoring -ll
+
+      - name: Test (pytest + coverage gate)
+        env:
+          TF_ENABLE_ONEDNN_OPTS: "0"
+          TF_CPP_MIN_LOG_LEVEL: "2"
+          BEDROCK_AWS_REGION: ${{ inputs.bedrock_aws_region }}
+        run: pytest --cov=src --cov=monitoring --cov-config=.coveragerc --cov-report=term-missing --cov-fail-under=60

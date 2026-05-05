@@ -1,0 +1,16 @@
+schema: '2.0'
+stages:
+  prepare_data:
+    cmd: .venv\Scripts\python.exe -c "from training.train_model import 
+      download_crypto_data, save_cached_data; data = download_crypto_data(); 
+      save_cached_data(data)"
+    deps:
+    - path: training/train_model.py
+      hash: md5
+      md5: 61701ec8a1978fb3537eca980bad8959
+      size: 51390
+    outs:
+    - path: models/btc_hourly_cache.csv
+      hash: md5
+      md5: 0de05fac71ffa4c919e488edc70b5e36
+      size: 1126378

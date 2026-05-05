@@ -1,0 +1,40 @@
+﻿# Runtime direct dependencies
+# pip-compile --resolver=backtracking -o requirements.txt requirements.in
+
+fastapi
+uvicorn[standard]
+tensorflow
+pandas
+pyarrow
+numpy
+scikit-learn
+yfinance
+psutil
+pydantic
+joblib
+requests
+matplotlib
+prometheus-client
+prometheus-fastapi-instrumentator
+mlflow
+boto3
+langchain
+langchain-aws
+langchain-community
+tiktoken
+presidio-analyzer
+presidio-anonymizer
+evidently>=0.4,<0.5
+langfuse
+pandera
+httpx
+apscheduler
+psycopg2-binary
+
+# opentelemetry-proto>=1.28 requires protobuf>=5, which conflicts with
+# tensorflow 2.x (requires protobuf<5). This upper bound is mandatory.
+opentelemetry-proto<1.28
+
+# datasets 4.x requires fsspec<=2026.2.0; pin here so requirements.txt and
+# requirements.eval.txt are compiled with the same fsspec version.
+fsspec<=2026.2.0

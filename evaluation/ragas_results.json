@@ -1,0 +1,251 @@
+{
+  "golden_set_path": "data\\golden_set\\btc_rag_golden_set.json",
+  "sample_count": 21,
+  "reproducibility": {
+    "seed": 42,
+    "expected_questions": 21,
+    "llm_model": "models/gemini-2.5-flash",
+    "embedding_model": "models/gemini-embedding-001",
+    "metric_backend": "deterministic_offline_fallback"
+  },
+  "metrics": {
+    "faithfulness": 0.43851027717051466,
+    "answer_relevancy": 0.653657174708365,
+    "context_precision": 0.3750525314967566,
+    "context_recall": 0.38787071973788767
+  },
+  "metric_diagnostics": {
+    "faithfulness": {
+      "total": 21,
+      "valid": 21,
+      "invalid": 0
+    },
+    "answer_relevancy": {
+      "total": 21,
+      "valid": 21,
+      "invalid": 0
+    },
+    "context_precision": {
+      "total": 21,
+      "valid": 21,
+      "invalid": 0
+    },
+    "context_recall": {
+      "total": 21,
+      "valid": 21,
+      "invalid": 0
+    }
+  },
+  "records": [
+    {
+      "question": "O que exatamente o modelo desta aplicação prevê para o Bitcoin?",
+      "ground_truth": "O modelo prevê o preço de fechamento da próxima hora para o ticker BTC-USD. A resposta ideal deve deixar claro que o alvo é o próximo fechamento horário, não uma previsão diária ou de longo prazo.",
+      "answer": "O modelo desta aplicação prevê o preço de fechamento da próxima hora para o ticker BTC-USD. Ele foi desenhado para horizonte horário e não para projeções diárias, semanais ou de longo prazo.",
+      "contexts": [
+        "O endpoint /predict retorna o preço previsto para o fechamento da próxima hora, com forecast_for e forecast_close em UTC e BRT.",
+        "O modelo foi treinado especificamente para o ticker BTC-USD."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "A API aceita qualquer criptoativo ou somente Bitcoin?",
+      "ground_truth": "A aplicação aceita apenas BTC-USD. Se outro ticker for enviado, a API deve rejeitar a requisição com erro de ticker não suportado.",
+      "answer": "A API aceita apenas BTC-USD. Se o cliente enviar outro ticker, a aplicação deve rejeitar a chamada porque o modelo foi treinado somente para Bitcoin nesse formato.",
+      "contexts": [
+        "SUPPORTED_TICKER = BTC-USD no código da aplicação.",
+        "O endpoint /predict informa que aceita apenas o ticker BTC-USD."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "O que significa usar use_partial_candle igual a true?",
+      "ground_truth": "Significa incluir a vela horária ainda em formação na entrada do modelo. Quando false, a inferência usa apenas velas fechadas.",
+      "answer": "Quando use_partial_candle é true, a inferência também usa a vela horária em formação. Quando o parâmetro está false, o modelo considera apenas velas já fechadas.",
+      "contexts": [
+        "O body do endpoint /predict permite use_partial_candle para incluir a vela em formação.",
+        "O modo padrão é usar apenas velas fechadas."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Quais informações adicionais acompanham a previsão além do preço previsto?",
+      "ground_truth": "Além do preço previsto, a API retorna janelas temporais da previsão em UTC e BRT, intervalo de confiança de 95%, erro estimado, modo de entrada, candle usado como base, fonte dos dados de mercado e latência de processamento.",
+      "answer": "A previsão não vem sozinha: a API também retorna o candle de entrada, a janela prevista em UTC e BRT, o intervalo de confiança de 95%, o erro estimado, o modo de entrada, a fonte dos dados de mercado e o tempo de processamento da requisição.",
+      "contexts": [
+        "PredictionResponse inclui predicted_price_usd, forecast_for_utc, forecast_for_brt, forecast_close_utc, forecast_close_brt, confidence_interval_95_usd, estimated_error_pct, data_source e processing_time_ms.",
+        "A API também informa last_input_candle_utc e last_input_candle_brt."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Se o Yahoo Finance falhar, a aplicação para de funcionar?",
+      "ground_truth": "Não necessariamente. A aplicação tem fallback automático para a Binance quando o Yahoo Finance falha ou retorna dados indisponíveis.",
+      "answer": "Não. A aplicação tenta Yahoo Finance como fonte principal e, se houver falha, faz fallback automático para a API pública da Binance para manter a obtenção dos dados de mercado.",
+      "contexts": [
+        "A arquitetura usa duas fontes de dados com fallback automático: Yahoo Finance e Binance.",
+        "download_with_retry tenta Yahoo Finance e depois Binance se necessário."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Quais são as principais features técnicas usadas pelo modelo LSTM?",
+      "ground_truth": "O modelo multi-feature usa log_return, RSI(14), MACD Signal, Bollinger %B, razão SMA(7/21) e razão de volume.",
+      "answer": "As principais features técnicas usadas pelo modelo LSTM multi-feature são log_return, RSI(14), MACD Signal, Bollinger %B, razão SMA(7/21) e razão de volume.",
+      "contexts": [
+        "O modelo LSTM treinado usa 6 features técnicas: log_return, RSI(14), MACD Signal, Bollinger %B, razão SMA(7/21) e razão de volume.",
+        "Esses indicadores são reconstruídos na inferência multi-feature."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "O modelo oferece alguma indicação de incerteza da previsão?",
+      "ground_truth": "Sim. A resposta pode incluir intervalo de confiança de 95% e erro estimado, calculados a partir de métricas como RMSE ou MAPE presentes nos metadados do modelo.",
+      "answer": "Sim. A aplicação tenta quantificar a incerteza da previsão com intervalo de confiança de 95% e erro estimado, usando métricas de validação como RMSE ou MAPE armazenadas nos metadados do modelo.",
+      "contexts": [
+        "estimate_uncertainty usa mape_price e rmse_price para construir erro estimado e intervalo de confiança.",
+        "O endpoint /predict expõe confidence_interval_95_usd e estimated_error_pct."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Quais ferramentas o agente ReAct usa para responder perguntas sobre Bitcoin?",
+      "ground_truth": "O agente usa três ferramentas principais: uma ferramenta de previsão com o modelo LSTM, uma ferramenta de cotação atual e uma ferramenta de contexto financeiro do tipo RAG.",
+      "answer": "O agente ReAct usa três ferramentas: PrevisaoBitcoinTool para inferência do modelo, CotacaoAtualTool para preço atual e CryptoRAGTool para contexto financeiro e de mercado.",
+      "contexts": [
+        "Ferramentas disponíveis: PrevisaoBitcoinTool, CotacaoAtualTool e CryptoRAGTool.",
+        "O endpoint /chat orquestra essas três ferramentas via LangChain."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "O que o halving de 2024 representa no contexto do Bitcoin?",
+      "ground_truth": "O halving de 2024 reduziu a emissão de novos BTC por bloco e, historicamente, esse tipo de evento costuma anteceder ciclos de alta ao restringir a nova oferta do ativo.",
+      "answer": "O halving de 2024 reduziu a emissão de novos BTC por bloco, diminuindo a oferta nova do ativo. Historicamente, esse tipo de evento costuma anteceder ciclos de alta de médio prazo no Bitcoin.",
+      "contexts": [
+        "O halving do Bitcoin em abril de 2024 reduziu a emissão de novos BTC de 6.25 para 3.125 por bloco.",
+        "Historicamente halvings precedem bull markets de 12-18 meses."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Por que ETFs spot de Bitcoin são relevantes para o preço do ativo?",
+      "ground_truth": "ETFs spot ampliam o acesso institucional e podem sustentar a demanda por BTC. Fluxos positivos nesses produtos tendem a reforçar a demanda compradora no mercado.",
+      "answer": "ETFs spot são relevantes porque ampliam o acesso institucional ao Bitcoin e podem sustentar a demanda pelo ativo. Fluxos positivos recorrentes nesses fundos tendem a favorecer o preço do BTC.",
+      "contexts": [
+        "Os ETFs de bitcoin spot aprovados pela SEC em janeiro de 2024 acumularam mais de USD 50 bilhões em AUM em menos de 12 meses.",
+        "Fluxos positivos sustentados tendem a sustentar o preço."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Como o ambiente macroeconômico influencia o Bitcoin, segundo a base de conhecimento do agente?",
+      "ground_truth": "O Bitcoin tende a reagir ao ambiente macro, especialmente a juros, dólar e apetite a risco. Um cenário de flexibilização monetária pode ser mais favorável para ativos de risco, incluindo cripto.",
+      "answer": "Segundo a base do agente, Bitcoin reage ao ambiente macro por meio de variáveis como juros, dólar e apetite a risco. Ciclos de flexibilização monetária tendem a ser mais favoráveis para ativos de risco, incluindo cripto.",
+      "contexts": [
+        "Bitcoin correlaciona-se negativamente com o DXY e positivamente com ativos de risco em momentos de corte de juros.",
+        "Com o Federal Reserve em ciclo de flexibilização, o ambiente macro pode favorecer ativos de risco."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "A aplicação informa qual fonte de dados foi usada na resposta?",
+      "ground_truth": "Sim. A resposta expõe o campo data_source para indicar se os dados vieram do Yahoo Finance ou da Binance.",
+      "answer": "Sim. A aplicação informa explicitamente a fonte usada por meio do campo data_source, permitindo saber se a resposta foi baseada em Yahoo Finance ou Binance.",
+      "contexts": [
+        "PredictionResponse inclui o campo data_source.",
+        "O healthcheck também reporta a fonte de dados ativa."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "A previsão do modelo deve ser interpretada como certeza sobre o mercado?",
+      "ground_truth": "Não. A previsão é uma estimativa sujeita a incerteza e deve ser interpretada com cautela, principalmente porque Bitcoin é um ativo altamente volátil.",
+      "answer": "Não. A previsão é uma estimativa sujeita a erro e incerteza, e deve ser interpretada com cautela porque Bitcoin é um ativo de alta volatilidade.",
+      "contexts": [
+        "Bitcoin é um ativo de alta volatilidade, com drawdowns relevantes em mercados de baixa.",
+        "O modelo fornece intervalo de confiança de 95% baseado no RMSE do backtest para quantificar incerteza."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Qual endpoint expõe o histórico recente de previsões da API?",
+      "ground_truth": "O endpoint responsável é GET /predictions/history, que retorna as previsões mais recentes registradas pela aplicação.",
+      "answer": "O histórico recente de previsões fica disponível no endpoint GET /predictions/history, que retorna as últimas previsões registradas pela API.",
+      "contexts": [
+        "GET /predictions/history retorna as últimas até 100 previsões em ordem decrescente.",
+        "O histórico é útil para auditoria, monitoramento e detecção de drift."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Que tipo de monitoramento operacional a aplicação expõe?",
+      "ground_truth": "A aplicação expõe métricas Prometheus/OpenMetrics, incluindo contagem de chamadas, latência, fonte de dados, erros de dados de mercado, CPU e memória.",
+      "answer": "A aplicação expõe monitoramento operacional via endpoint /metrics em formato Prometheus/OpenMetrics, com métricas de chamadas, latência, fonte de dados, erros de mercado, CPU e memória.",
+      "contexts": [
+        "GET /metrics expõe métricas operacionais no formato Prometheus/OpenMetrics.",
+        "As métricas incluem stockcast_predict_requests_total, stockcast_predict_latency_seconds, stockcast_market_data_source_total, stockcast_market_data_errors_total, stockcast_cpu_usage_percent e stockcast_memory_usage_percent."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Como o agente pode responder quando a pergunta mistura previsão e contexto de mercado?",
+      "ground_truth": "O agente deve combinar a ferramenta de previsão para obter o forecast do BTC com a ferramenta de contexto financeiro para explicar fatores como macro, ETFs, halving ou risco, produzindo uma resposta integrada.",
+      "answer": "Quando a pergunta mistura previsão e contexto, o agente pode combinar a ferramenta de previsão com a CryptoRAGTool para explicar fatores de mercado, como macroeconomia, ETFs, halving e risco, em uma resposta integrada.",
+      "contexts": [
+        "O agente possui ferramentas separadas para previsão, cotação atual e contexto financeiro.",
+        "A CryptoRAGTool fornece contexto sobre halving, ETFs, regulação, macro, dominância e risco."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "O que significa a dominância do Bitcoin estar acima de 55% por boa parte de 2024?",
+      "ground_truth": "Isso sugere que os fluxos, especialmente institucionais, ficaram mais concentrados em BTC do que em altcoins. Esse padrão costuma adiar a rotação para altcoins até um estágio posterior do ciclo.",
+      "answer": "Uma dominância acima de 55% indica que os fluxos ficaram mais concentrados em Bitcoin do que em altcoins, o que sugere preferência por BTC e pode adiar a rotação para outros criptoativos para um momento posterior do ciclo.",
+      "contexts": [
+        "A dominância do Bitcoin ficou acima de 55% durante a maior parte de 2024, indicando concentração dos fluxos institucionais em BTC via ETF.",
+        "A rotação para altcoins tipicamente ocorre depois do pico de dominância do BTC."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Como a regulação aparece como fator de contexto no agente?",
+      "ground_truth": "A base de conhecimento do agente trata regulação como um fator que influencia a confiança e a adoção do mercado, destacando clareza regulatória nos EUA, MiCA na Europa e mudanças regionais na Ásia.",
+      "answer": "No agente, regulação aparece como um fator de contexto que afeta confiança e adoção. A base cita avanços de clareza regulatória nos EUA, implementação do MiCA na Europa e mudanças regionais relevantes na Ásia.",
+      "contexts": [
+        "O ambiente regulatório global melhorou em 2024-2025, com maior clareza regulatória nos EUA.",
+        "A Europa implementou MiCA e outras regiões ajustaram sua postura em relação a ETFs e mineração."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Por que a aplicação mantém um endpoint /live separado do /health?",
+      "ground_truth": "Porque /live é um endpoint leve de liveness, enquanto /health executa checagens mais completas de artefatos, inferência e acesso a dados de mercado. Isso evita impacto desnecessário em verificações simples de disponibilidade.",
+      "answer": "A aplicação separa /live de /health para distinguir liveness simples de diagnóstico completo. O /live é leve e rápido; o /health verifica artefatos, inferência e acesso aos dados de mercado.",
+      "contexts": [
+        "GET /live é um endpoint leve para liveness.",
+        "GET /health retorna estado efetivo com validações de artefatos, inferência real e acesso a dados de mercado."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Qual é o principal risco de interpretar a previsão do BTC sem considerar contexto e volatilidade?",
+      "ground_truth": "O principal risco é assumir a previsão como verdade determinística e ignorar a volatilidade elevada do Bitcoin, o que pode levar a decisões excessivamente confiantes apesar da incerteza do mercado.",
+      "answer": "O principal risco é tratar a previsão como determinística e ignorar que Bitcoin é altamente volátil. Sem considerar contexto e incerteza, a decisão pode ficar confiante demais para um mercado que muda rapidamente.",
+      "contexts": [
+        "Bitcoin é um ativo de alta volatilidade, com desvio padrão diário elevado e drawdowns relevantes.",
+        "O modelo fornece medidas de incerteza justamente para evitar leitura excessivamente determinística da previsão."
+      ],
+      "raw_response": {}
+    },
+    {
+      "question": "Se eu quiser uma resposta completa sobre previsão para a próxima hora e os fatores que podem afetar esse resultado, o que a solução oferece?",
+      "ground_truth": "A solução combina um modelo LSTM para prever o próximo fechamento horário do BTC-USD com um agente que também consegue trazer cotação atual e contexto de mercado, como halving, ETFs, macroeconomia, regulação e risco.",
+      "answer": "A solução oferece um modelo LSTM para prever o próximo fechamento horário do BTC-USD e um agente que complementa essa previsão com preço atual e contexto de mercado, incluindo halving, ETFs, macroeconomia, regulação e risco.",
+      "contexts": [
+        "O agente ReAct integra PrevisaoBitcoinTool, CotacaoAtualTool e CryptoRAGTool.",
+        "A base de conhecimento do agente cobre halving, ETFs, regulação, macro, dominância e risco."
+      ],
+      "raw_response": {}
+    }
+  ]
+}

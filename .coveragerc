@@ -1,0 +1,10 @@
+[run]
+source =
+    src
+    monitoring
+
+[report]
+fail_under = 60
+precision = 2
+show_missing = True
+skip_covered = False

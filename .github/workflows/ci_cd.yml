@@ -2,53 +2,28 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, develop]
 
 jobs:
   ci:
-    name: CI - Lint, Type Check, Security, Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install ruff mypy bandit pytest pytest-cov
-
-      - name: Lint (ruff)
-        run: ruff check .
-
-      - name: Type check (mypy)
-        run: mypy src monitoring
-
-      - name: Security scan (bandit)
-        run: bandit -r src monitoring -ll
-
-      - name: Test (pytest + coverage gate)
-        env:
-          TF_ENABLE_ONEDNN_OPTS: "0"
-          TF_CPP_MIN_LOG_LEVEL: "2"
-        run: pytest --cov=src --cov=monitoring --cov-config=.coveragerc --cov-report=term-missing --cov-fail-under=60
+    uses: ./.github/workflows/ci_common.yml
+    concurrency:
+      group: ci-cd-ci-${{ github.ref }}
+      cancel-in-progress: true
+    with:
+      bedrock_aws_region: "us-east-1"
+    secrets: inherit
 
   cd:
     name: CD - Build, Push ECR, Deploy ECS
     runs-on: ubuntu-latest
     needs: ci
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     permissions:
       id-token: write
       contents: read
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
 
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
@@ -60,11 +35,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate deployment variables
+        run: |
+          missing=0
+          for var in AWS_REGION ECR_REPOSITORY ECS_CLUSTER_NAME ECS_SERVICE_NAME; do
+            if [ -z "${!var}" ]; then
+              echo "[ERROR] Missing required GitHub Environment variable: $var"
+              missing=1
+            fi
+          done
+
+          if [ -z "${{ secrets.AWS_ROLE_TO_ASSUME }}" ]; then
+            echo "[ERROR] Missing required GitHub Environment secret: AWS_ROLE_TO_ASSUME"
+            missing=1
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            echo "Configure variables/secrets in GitHub Environment: ${GITHUB_REF##*/}"
+            exit 1
+          fi
+
+          echo "Deploy target environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}"
+          echo "AWS region: $AWS_REGION"
+          echo "ECR repository: $ECR_REPOSITORY"
+          echo "ECS cluster: $ECS_CLUSTER_NAME"
+          echo "ECS service: $ECS_SERVICE_NAME"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install DVC and pull models from S3
+        run: |
+          python -m pip install --upgrade pip
+          pip install dvc[s3]
+          dvc pull --force
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -76,7 +83,11 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           IMAGE_URI="$REGISTRY/$ECR_REPOSITORY"
-          docker build -t "$IMAGE_URI:$IMAGE_TAG" -t "$IMAGE_URI:latest" .
+          docker build \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            -t "$IMAGE_URI:$IMAGE_TAG" \
+            -t "$IMAGE_URI:latest" \
+            .
           docker push "$IMAGE_URI:$IMAGE_TAG"
           docker push "$IMAGE_URI:latest"
 
@@ -88,7 +99,59 @@ jobs:
             --force-new-deployment
 
       - name: Wait for ECS service stability
+        id: ecs-wait
+        continue-on-error: true
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER_NAME" \
             --services "$ECS_SERVICE_NAME"
+
+      - name: ECS diagnostics on stability failure
+        if: steps.ecs-wait.outcome == 'failure'
+        run: |
+          echo "[ERROR] ECS service did not become stable in the waiter window."
+          echo "[INFO] Service status summary:"
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER_NAME" \
+            --services "$ECS_SERVICE_NAME" \
+            --query 'services[0].{status:status,desired:desiredCount,running:runningCount,pending:pendingCount,taskDefinition:taskDefinition,deployments:deployments[*].{status:status,rolloutState:rolloutState,desired:desiredCount,running:runningCount,pending:pendingCount,failedTasks:failedTasks}}' \
+            --output json
+
+          echo "[INFO] Recent service events:"
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER_NAME" \
+            --services "$ECS_SERVICE_NAME" \
+            --query 'services[0].events[0:15].[createdAt,message]' \
+            --output table || true
+
+          echo "[INFO] Running task ARNs:"
+          aws ecs list-tasks \
+            --cluster "$ECS_CLUSTER_NAME" \
+            --service-name "$ECS_SERVICE_NAME" \
+            --desired-status RUNNING \
+            --query 'taskArns' \
+            --output json || echo "[WARN] Unable to list RUNNING tasks. Check ecs:ListTasks permission."
+
+          echo "[INFO] Stopped task ARNs:"
+          STOPPED_TASKS=$(aws ecs list-tasks \
+            --cluster "$ECS_CLUSTER_NAME" \
+            --service-name "$ECS_SERVICE_NAME" \
+            --desired-status STOPPED \
+            --query 'taskArns' \
+            --output text 2>/dev/null || true)
+
+          if [ -n "$STOPPED_TASKS" ] && [ "$STOPPED_TASKS" != "None" ]; then
+            aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER_NAME" \
+              --tasks $STOPPED_TASKS \
+              --query 'tasks[*].{taskArn:taskArn,lastStatus:lastStatus,stopCode:stopCode,stoppedReason:stoppedReason,containers:containers[*].{name:name,exitCode:exitCode,reason:reason,lastStatus:lastStatus}}' \
+              --output json || echo "[WARN] Unable to describe STOPPED tasks. Check ecs:DescribeTasks permission."
+          else
+            echo "No stopped tasks found."
+          fi
+
+      - name: Fail if ECS did not stabilize
+        if: steps.ecs-wait.outcome == 'failure'
+        run: |
+          echo "[ERROR] ECS deployment failed to stabilize. See diagnostics above."
+          exit 1

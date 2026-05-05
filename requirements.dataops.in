@@ -1,0 +1,8 @@
+# DataOps dependencies
+# Generate lock file with:
+#   pip-compile --resolver=backtracking -o requirements.dataops.txt requirements.dataops.in
+
+-r requirements.in
+
+dvc[s3]==3.67.1
+s3fs==2026.2.0
