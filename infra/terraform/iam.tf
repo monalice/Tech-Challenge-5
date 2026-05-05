@@ -68,6 +68,15 @@ data "aws_iam_policy_document" "ecs_task_bedrock" {
   statement {
     effect = "Allow"
     actions = [
+      "aws-marketplace:ViewSubscriptions",
+      "aws-marketplace:Subscribe"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
       "cloudwatch:PutMetricData"
     ]
     resources = ["*"]

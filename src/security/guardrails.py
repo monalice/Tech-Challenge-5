@@ -1,6 +1,8 @@
+import logging
 import os
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, cast
 
 
@@ -18,16 +20,83 @@ try:
 except ImportError:
     boto3 = None
 
+logger = logging.getLogger("stockcast.guardrails")
+
 ANALYZER_ENGINE_CLS: Any | None = None
 ANONYMIZER_ENGINE_CLS: Any | None = None
 try:
     from presidio_analyzer import AnalyzerEngine as _ImportedAnalyzerEngine
+    from presidio_analyzer.nlp_engine import NlpEngineProvider as _ImportedNlpEngineProvider
     from presidio_anonymizer import AnonymizerEngine as _ImportedAnonymizerEngine
 
     ANALYZER_ENGINE_CLS = _ImportedAnalyzerEngine
+    NLP_ENGINE_PROVIDER_CLS: Any | None = _ImportedNlpEngineProvider
     ANONYMIZER_ENGINE_CLS = _ImportedAnonymizerEngine
 except ImportError:
+    NLP_ENGINE_PROVIDER_CLS = None
     pass
+
+
+def _env_flag_true(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_spacy_model_installed(model_name: str) -> bool:
+    try:
+        from spacy.util import is_package
+
+        return bool(is_package(model_name))
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _build_presidio_engines() -> tuple[Any | None, Any | None]:
+    """Cria engines Presidio apenas com modelo spaCy já instalado localmente.
+
+    Evita downloads em runtime (que geram latência alta e podem causar timeout).
+    """
+    if ANALYZER_ENGINE_CLS is None or ANONYMIZER_ENGINE_CLS is None:
+        return None, None
+
+    analyzer_cls = cast(Any, ANALYZER_ENGINE_CLS)
+    anonymizer_cls = cast(Any, ANONYMIZER_ENGINE_CLS)
+
+    allow_auto_download = _env_flag_true("PRESIDIO_ALLOW_MODEL_DOWNLOAD", default=False)
+    model_name = (os.getenv("PRESIDIO_SPACY_MODEL") or "en_core_web_lg").strip()
+
+    if not allow_auto_download and not _is_spacy_model_installed(model_name):
+        logger.info(
+            "Presidio desabilitado para evitar download em runtime (modelo spaCy ausente: %s). "
+            "Usando fallback regex.",
+            model_name,
+        )
+        return None, None
+
+    try:
+        if NLP_ENGINE_PROVIDER_CLS is not None:
+            provider = cast(Any, NLP_ENGINE_PROVIDER_CLS)(
+                nlp_configuration={
+                    "nlp_engine_name": "spacy",
+                    "models": [{"lang_code": "en", "model_name": model_name}],
+                }
+            )
+            nlp_engine = provider.create_engine()
+            analyzer = analyzer_cls(nlp_engine=nlp_engine, supported_languages=["en"])
+        else:
+            analyzer = analyzer_cls()
+
+        anonymizer = anonymizer_cls()
+        return analyzer, anonymizer
+    except Exception as exc:
+        logger.warning(
+            "Falha ao inicializar Presidio/spaCy; usando fallback regex. erro=%s",
+            exc,
+        )
+        return None, None
 
 
 @dataclass
@@ -337,14 +406,11 @@ class OutputGuardrail(_BedrockGuardrailBase):
     @staticmethod
     def _anonymize_pii_with_presidio(text: str) -> str:
         """Tenta anonimização via Presidio; usa fallback regex se indisponível."""
-        if ANALYZER_ENGINE_CLS is None or ANONYMIZER_ENGINE_CLS is None:
+        analyzer, anonymizer = _build_presidio_engines()
+        if analyzer is None or anonymizer is None:
             return OutputGuardrail._anonymize_pii_with_regex(text)
 
         try:
-            analyzer_cls = cast(Any, ANALYZER_ENGINE_CLS)
-            anonymizer_cls = cast(Any, ANONYMIZER_ENGINE_CLS)
-            analyzer = analyzer_cls()
-            anonymizer = anonymizer_cls()
             entities = ["EMAIL_ADDRESS", "PHONE_NUMBER", "BR_CPF", "CPF"]
             results = analyzer.analyze(text=text, language="pt", entities=entities)
             if not results:
