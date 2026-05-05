@@ -11,6 +11,7 @@ multiprocess
 ragas
 langchain-openai
 pytest
+prometheus-fastapi-instrumentator
 
 # Pin onnxruntime to prevent the 20+ version backtracking loop chromadb triggers
 onnxruntime>=1.14,<1.21
