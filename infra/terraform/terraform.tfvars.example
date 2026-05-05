@@ -19,6 +19,7 @@ drift_schedule_expression = "cron(0 * * * ? *)"
 drift_ticker              = "BTC-USD"
 llm_metrics_namespace     = "StockCast/LLM"
 llm_alarm_email           = "mlops-alerts@example.com"
+agent_llm_model           = "anthropic.claude-haiku-4-5-20251001-v1:0"
 
 # ---------------------------------------------------------------------------
 # Monitoring stack (Prometheus + Grafana)

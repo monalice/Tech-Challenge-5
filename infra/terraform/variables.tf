@@ -101,9 +101,8 @@ variable "llm_metrics_namespace" {
 }
 
 variable "llm_alarm_email" {
-  description = "Email endpoint for SNS notifications of LLM degradation alarms"
+  description = "Email endpoint for SNS notifications of LLM degradation alarms (configure in terraform.tfvars)"
   type        = string
-  default     = "mlops-alerts@example.com"
 }
 
 # ---------------------------------------------------------------------------
@@ -148,7 +147,6 @@ variable "grafana_admin_password" {
   description = "Admin password for Grafana. Overwrite in terraform.tfvars — never commit the real value."
   type        = string
   sensitive   = true
-  default     = "StockCast@Monitor2026"
 }
 
 variable "monitoring_task_cpu" {
@@ -180,9 +178,8 @@ variable "mlflow_candidate_alias" {
 # ---------------------------------------------------------------------------
 
 variable "agent_llm_model" {
-  description = "Bedrock inference profile ARN or model ID for the ReAct agent LLM"
+  description = "Bedrock inference profile ARN or model ID for the ReAct agent LLM (configure in terraform.tfvars)"
   type        = string
-  default     = "arn:aws:bedrock:us-east-1:606425862977:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
 
 variable "github_repository_owner" {
