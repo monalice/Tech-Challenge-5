@@ -136,7 +136,6 @@ celerybeat.pid
 
 # Environments
 .env
-.env-old
 .envrc
 .venv
 env/
@@ -211,19 +210,3 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-
-# Local operational artifacts (do not version)
-mlflow.db
-mypy_out.txt
-mypy_output.txt
-
-# Evaluation outputs generated locally
-evaluation/llm_judge_results.json
-evaluation/results/
-
-# Terraform local cache/providers
-infra/terraform/.terraform/
-infra/terraform/providers-cache/
-
-.vscode/
-"models/btc_hourly_cache.csv" 
