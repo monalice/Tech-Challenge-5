@@ -2,15 +2,15 @@
 
 ## Resumo
 
-O sistema combina uma API FastAPI, um modelo LSTM de previsão horária de Bitcoin e um Agente ReAct com Gemini. A solução expõe previsão numérica, contexto de mercado, guardrails e observabilidade operacional.
+O sistema combina uma API FastAPI, um modelo LSTM de previsão horária de Bitcoin e um Agente ReAct com Amazon Bedrock. A solução expõe previsão numérica, contexto de mercado, guardrails e observabilidade operacional.
 
 ## Componentes Principais
 
-- API FastAPI em [src/app.py](src/app.py)
-- Pipeline de treino em [training/train_model.py](training/train_model.py)
-- Agente ReAct em [src/agent/react_agent.py](src/agent/react_agent.py)
-- Guardrails de entrada e saída em [src/security/guardrails.py](src/security/guardrails.py)
-- Infraestrutura como código em [infra/terraform/main.tf](infra/terraform/main.tf)
+- API FastAPI em [src/app.py](../src/app.py)
+- Pipeline de treino em [training/train_model.py](../training/train_model.py)
+- Agente ReAct em [src/agent/react_agent.py](../src/agent/react_agent.py)
+- Guardrails de entrada e saída em [src/security/guardrails.py](../src/security/guardrails.py)
+- Infraestrutura como código em [infra/terraform/main.tf](../infra/terraform/main.tf)
 
 ## Arquitetura Cloud
 
@@ -20,7 +20,7 @@ Com base no Terraform atual, a arquitetura AWS inclui:
 - Amazon ECR para armazenamento da imagem Docker
 - Amazon RDS PostgreSQL para metadados do MLflow
 - Amazon S3 para artefatos do modelo, DVC e MLflow
-- AWS Secrets Manager para `GOOGLE_API_KEY` e senha do banco
+- AWS Secrets Manager para segredos operacionais (ex.: senha do banco)
 - CloudWatch Logs para logs do serviço ECS
 - Security Groups separados para ECS e RDS
 
@@ -38,18 +38,20 @@ Com base no Terraform atual, a arquitetura AWS inclui:
 
 ## Agente ReAct
 
-O agente usa `ChatGoogleGenerativeAI` com modelo configurável via `.env` (default: **`gemini-2.5-flash`** para free tier) e temperatura `0` (determinístico). A resolução de modelo segue cadeia: `AGENT_LLM_MODEL` (env) → `GEMINI_LLM_MODEL` (env) → hardcoded `gemini-2.5-flash`. Embeddings usam `gemini-embedding-001` (dimensão 3072, free tier). O agente orquestra ferramentas para responder perguntas sobre previsão, preço atual e contexto de mercado.
+O agente usa `ChatBedrock` (via `langchain_aws`) com modelo configurável por variável de ambiente (cadeia: `AGENT_LLM_MODEL` → `BEDROCK_MODEL_ID` → default `anthropic.claude-haiku-4-5-20251001-v1:0`) e temperatura `0` por padrão (determinístico). O agente orquestra ferramentas para responder perguntas sobre previsão, preço atual e contexto de mercado.
 
 Ferramentas relevantes:
 
 - `PrevisaoBitcoinTool`
 - `CotacaoAtualTool`
-- `CryptoKnowledgeRAG` (com `GoogleGenerativeAIEmbeddings`)
+- `CryptoKnowledgeRAG`
 - Temperatura e parâmetros de sampling via `.env` (overrides: `AGENT_LLM_TEMPERATURE`, `AGENT_LLM_TOP_P`, `AGENT_LLM_TOP_K`)
+- Região AWS para Bedrock via `.env`: `BEDROCK_AWS_REGION` (fallback: `AWS_REGION`, `AWS_DEFAULT_REGION`)
+- Em produção, validação de startup exige `BEDROCK_GUARDRAIL_ID` e `BEDROCK_GUARDRAIL_VERSION`
 
 ## Guardrails
 
-Implementados em [src/security/guardrails.py](src/security/guardrails.py) e aplicados em [src/app.py](src/app.py):
+Implementados em [src/security/guardrails.py](../src/security/guardrails.py) e aplicados em [src/app.py](../src/app.py):
 
 - `InputGuardrail`
   - bloqueia prompt injection por regex
@@ -108,7 +110,7 @@ Configuração: ver `.env.example` para as variáveis `LANGFUSE_PUBLIC_KEY`, `LA
 
 ## Dependências Externas Críticas
 
-- Gemini API
+- Amazon Bedrock
 - Yahoo Finance
 - Binance REST API
 - Serviços AWS provisionados por Terraform

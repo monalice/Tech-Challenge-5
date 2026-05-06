@@ -24,7 +24,7 @@ O pipeline de treino normaliza os dados e remove valores ausentes/duplicados. Na
 
 ## Features
 
-O modelo atual usa 6 features técnicas, descritas em [models/model_metadata_btc.json](models/model_metadata_btc.json):
+O modelo atual usa 6 features técnicas, descritas em [models/model_metadata_btc.json](../models/model_metadata_btc.json):
 
 - `log_return`
 - `rsi`
@@ -48,7 +48,7 @@ O alvo do modelo é `log_return`, que depois é convertido novamente para preço
 
 ## Métricas
 
-Métricas registradas em [models/model_metadata_btc.json](models/model_metadata_btc.json):
+Métricas registradas em [models/model_metadata_btc.json](../models/model_metadata_btc.json):
 
 - MAE em preço: `285.46` USD
 - RMSE em preço: `411.72` USD
@@ -94,7 +94,12 @@ Baseline registrado no metadata:
 
 ## Artefatos Relacionados
 
-- [models/lstm_btc_hourly.keras](models/lstm_btc_hourly.keras)
-- [models/model_metadata_btc.json](models/model_metadata_btc.json)
-- [training/train_model.py](training/train_model.py)
-- [src/app.py](src/app.py)
+Observação importante: no estado atual do repositório, a pasta `models/` pode estar vazia.
+Os artefatos abaixo não devem ser interpretados como sempre versionados no Git; eles
+dependem de geração por treino, recuperação via `dvc pull` ou carregamento por S3 no startup.
+
+- [models/lstm_btc_hourly.keras](../models/lstm_btc_hourly.keras)
+- [models/model_metadata_btc.json](../models/model_metadata_btc.json)
+- [training/train_model.py](../training/train_model.py)
+- [src/app.py](../src/app.py) (entrypoint da API)
+- [src/delivery/api/routers/chat.py](../src/delivery/api/routers/chat.py) (integração do Agente ReAct no endpoint `/chat`)

@@ -96,12 +96,12 @@ Após subir a aplicação, acesse:
   - Inclui: timestamp, ticker, modo de entrada, candle usado, previsão, fonte de dados e latência.
   - Útil para **auditoria**, **detecção de drift** e comparação posterior com valores reais.
 - `POST /chat`
-=  - Endpoint do **Agente LLM ReAct** (LangChain + Gemini).
+  - Endpoint do **Agente LLM ReAct** (LangChain + Amazon Bedrock).
   - Recebe uma mensagem em linguagem natural e orquestra 3 ferramentas:
     - `PrevisaoBitcoinTool` — executa o pipeline de inferência LSTM e retorna a previsão.
     - `CotacaoAtualTool` — consulta o preço atual do BTC via yfinance / Binance.
     - `CryptoKnowledgeRAG` — fornece contexto financeiro e notícias cripto via vector store local.
-  - Requer a variável de ambiente `GOOGLE_API_KEY`.
+  - Requer configuração de região AWS para Bedrock (`BEDROCK_AWS_REGION` ou fallback em `AWS_REGION`/`AWS_DEFAULT_REGION`).
   - Exemplo de body:
 
 ```json
@@ -292,12 +292,12 @@ Os arquivos IaC estão em [infra/terraform](infra/terraform), incluindo:
 - RDS PostgreSQL para metadados do MLflow
 - ECR para imagem Docker
 - ECS/Fargate para execução da API
-- Secrets Manager para `GOOGLE_API_KEY` e senha do banco
+- Secrets Manager para segredos operacionais (ex.: senha do banco)
 
 ### Preparação
 
 1. Copie [infra/terraform/terraform.tfvars.example](infra/terraform/terraform.tfvars.example) para [infra/terraform/terraform.tfvars](infra/terraform/terraform.tfvars).
-2. Preencha os valores reais de `db_password` e `google_api_key`.
+2. Preencha os valores reais exigidos pelo ambiente (por exemplo `db_password` e parâmetros do agente/Bedrock).
 
 ### Execução (PowerShell)
 
@@ -385,23 +385,22 @@ cp .env.example .env
 
 | Variável | Descrição |
 |---|---|
-| `GOOGLE_API_KEY` | Chave da Google AI (obrigatória para o agente ReAct) |
-| `APP_ENV` | Ambiente da aplicação (`development`, `staging`, `production`). Em `production`, a API faz fail-fast se `GOOGLE_API_KEY` estiver ausente, placeholder ou formato inválido |
-| `GEMINI_LLM_MODEL` | Modelo LLM Gemini base (fallback para componentes de avaliação) |
-| `GEMINI_EMBEDDING_MODEL` | Modelo de embeddings Gemini base |
-| `GEMINI_TEMPERATURE` | Temperatura padrão global para componentes Gemini |
-| `GEMINI_TOP_P` | Top-p padrão global para componentes Gemini (opcional) |
-| `GEMINI_TOP_K` | Top-k padrão global para componentes Gemini (opcional) |
-| `AGENT_LLM_MODEL` | Modelo Gemini do agente ReAct |
+| `APP_ENV` | Ambiente da aplicação (`development`, `staging`, `production`). Em `production`, a API valida configuração Bedrock/Guardrails no startup |
+| `BEDROCK_AWS_REGION` | Região AWS para chamadas ao Bedrock (fallback: `AWS_REGION`, `AWS_DEFAULT_REGION`) |
+| `BEDROCK_MODEL_ID` | Modelo base/fallback para componentes LLM que usam Bedrock |
+| `BEDROCK_EMBEDDING_MODEL` | Modelo de embeddings base/fallback para componentes com embeddings Bedrock |
+| `BEDROCK_GUARDRAIL_ID` | Identificador do Guardrail Bedrock (obrigatório em produção) |
+| `BEDROCK_GUARDRAIL_VERSION` | Versão do Guardrail Bedrock (obrigatório em produção) |
+| `AGENT_LLM_MODEL` | Modelo Bedrock do agente ReAct |
 | `AGENT_LLM_TEMPERATURE` | Override de temperatura do agente ReAct |
 | `AGENT_LLM_TOP_P` | Override de top-p do agente ReAct (opcional) |
 | `AGENT_LLM_TOP_K` | Override de top-k do agente ReAct (opcional) |
-| `RAGAS_LLM_MODEL` | Modelo Gemini usado no `evaluation/ragas_eval.py` |
+| `RAGAS_LLM_MODEL` | Modelo Bedrock usado no `evaluation/ragas_eval.py` |
 | `RAGAS_EMBEDDING_MODEL` | Modelo de embeddings usado no `evaluation/ragas_eval.py` |
 | `RAGAS_LLM_TEMPERATURE` | Override de temperatura no `evaluation/ragas_eval.py` |
 | `RAGAS_LLM_TOP_P` | Override de top-p no `evaluation/ragas_eval.py` (opcional) |
 | `RAGAS_LLM_TOP_K` | Override de top-k no `evaluation/ragas_eval.py` (opcional) |
-| `LLM_JUDGE_MODEL` | Modelo Gemini usado no `evaluation/llm_judge.py` |
+| `LLM_JUDGE_MODEL` | Modelo Bedrock usado no `evaluation/llm_judge.py` |
 | `LLM_JUDGE_TEMPERATURE` | Override de temperatura no `evaluation/llm_judge.py` |
 | `LLM_JUDGE_TOP_P` | Override de top-p no `evaluation/llm_judge.py` (opcional) |
 | `LLM_JUDGE_TOP_K` | Override de top-k no `evaluation/llm_judge.py` (opcional) |
@@ -457,26 +456,29 @@ Métricas rastreadas por trace: faithfulness, relevância da resposta, latência
 
 ## Hardening de Segredos no Startup
 
-Para reduzir risco de credenciais fracas em produção, o startup da API valida `GOOGLE_API_KEY` com política fail-fast quando `APP_ENV=production`.
+Para reduzir risco de configuração insegura em produção, o startup da API valida Bedrock/Guardrails com política fail-fast quando `APP_ENV=production`.
 
 Bloqueios em produção:
 
-- chave ausente
-- placeholder/insegura (ex.: `your-google-api-key`, `mock_key_para_testes`)
-- formato incompatível com chave esperada
+- região Bedrock ausente, placeholder ou com formato inválido
+- `BEDROCK_GUARDRAIL_ID` ausente
+- `BEDROCK_GUARDRAIL_VERSION` ausente
 
 Exemplo de configuração local segura:
 
 ```bash
 APP_ENV=development
-GOOGLE_API_KEY=your-google-api-key
+BEDROCK_AWS_REGION=us-east-1
+AGENT_LLM_MODEL=anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
 Exemplo de produção:
 
 ```bash
 APP_ENV=production
-GOOGLE_API_KEY=AIzaSy<valor-real>
+BEDROCK_AWS_REGION=us-east-1
+BEDROCK_GUARDRAIL_ID=<guardrail-id>
+BEDROCK_GUARDRAIL_VERSION=<guardrail-version>
 ```
 
 ## Avaliação de Qualidade RAG (RAGAS)
@@ -522,7 +524,7 @@ python evaluation/ragas_eval.py \
   --golden-set data/golden_set/btc_rag_golden_set.json \
   --api-url http://localhost:8000
 
-# Executando métricas RAGAS online com Gemini (consome cota)
+# Executando métricas RAGAS online com Bedrock (consome cota)
 python evaluation/ragas_eval.py \
   --golden-set data/golden_set/btc_rag_golden_set.json \
   --expected-questions 21 \
@@ -540,17 +542,16 @@ Observações importantes para reprodutibilidade e validade:
 
 Comportamento do backend de métricas:
 
-- Por padrão, o script usa fallback determinístico (`deterministic_offline_fallback`) mesmo que `GOOGLE_API_KEY` esteja definida, para evitar consumo acidental de cota.
+- Por padrão, o script usa fallback determinístico (`deterministic_offline_fallback`) mesmo com credenciais AWS disponíveis, para evitar consumo acidental de cota.
 - Se `--enable-live-ragas` estiver ativo e o backend executar normalmente, o resultado terá `metric_backend = ragas`.
 - Se o backend online falhar e `--strict-ragas` não estiver ativo, o script volta para o fallback determinístico para evitar métricas inválidas.
 - Para exigir RAGAS estrito, use `--enable-live-ragas --strict-ragas` em conjunto.
 
 Modelo LLM usado na avaliação:
 
-- Padrão: lê `RAGAS_LLM_MODEL`; se ausente, usa fallback `GEMINI_LLM_MODEL`; se ambos ausentes, usa `models/gemini-2.5-flash`.
-- Embeddings: lê `RAGAS_EMBEDDING_MODEL`; se ausente, usa fallback `GEMINI_EMBEDDING_MODEL`; se ambos ausentes, usa `models/gemini-embedding-001` (compatível com `embedContent` no free tier atual).
-- Sampling: lê `RAGAS_LLM_TEMPERATURE`, `RAGAS_LLM_TOP_P`, `RAGAS_LLM_TOP_K`; se ausentes, usa fallback global `GEMINI_TEMPERATURE`, `GEMINI_TOP_P`, `GEMINI_TOP_K`.
-- Evite modelos que suportam apenas Interactions API, pois podem gerar erro `400 This model only supports Interactions API` no executor do RAGAS.
+- Padrão: lê `RAGAS_LLM_MODEL`; se ausente, usa fallback `BEDROCK_MODEL_ID`; se ambos ausentes, usa default interno.
+- Embeddings: lê `RAGAS_EMBEDDING_MODEL`; se ausente, usa fallback `BEDROCK_EMBEDDING_MODEL`; se ambos ausentes, usa default interno.
+- Sampling: lê `RAGAS_LLM_TEMPERATURE`, `RAGAS_LLM_TOP_P`, `RAGAS_LLM_TOP_K`; se ausentes, usa fallback `AGENT_LLM_TEMPERATURE`, `AGENT_LLM_TOP_P`, `AGENT_LLM_TOP_K`.
 
 Interpretação das 4 métricas (escala 0 a 1, quanto maior melhor):
 
@@ -623,8 +624,8 @@ Campos estáveis no JSON de saída:
 Observações:
 
 - O script carrega automaticamente o `.env` da raiz do projeto.
-- O modelo juiz segue fallback: `LLM_JUDGE_MODEL` → `GEMINI_LLM_MODEL` → default interno.
-- Se ocorrer erro de quota/429 ou indisponibilidade do Gemini, o script entra em fallback determinístico para manter a execução e gerar saída válida.
+- O modelo juiz segue fallback: `LLM_JUDGE_MODEL` → `BEDROCK_MODEL_ID` → default interno.
+- Se ocorrer erro de quota/429 ou indisponibilidade do Bedrock, o script entra em fallback determinístico para manter a execução e gerar saída válida.
 - Para forçar falha sem fallback, use `--strict-judge`.
 - Para desativar a cópia versionada, use `--skip-versioned-output`.
 

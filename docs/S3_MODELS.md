@@ -81,15 +81,17 @@ services:
 Se `S3_MODELS_BUCKET` é definido e as credenciais AWS estão disponíveis:
 
 1. **Treino (`train_model.py`):**
-   - Salva modelo Keras em: `s3://{S3_MODELS_BUCKET}/models/lstm_btc_hourly.keras`
-   - Salva scaler em: `s3://{S3_MODELS_BUCKET}/models/scaler_btc.gz`
-   - Salva scaler_return em: `s3://{S3_MODELS_BUCKET}/models/scaler_btc_return.gz`
-   - Salva metadata em: `s3://{S3_MODELS_BUCKET}/models/model_metadata_btc.json`
+  - Salva modelo Keras em: `s3://{S3_MODELS_BUCKET}/models/challenger/lstm_btc_hourly.keras`
+  - Salva scaler em: `s3://{S3_MODELS_BUCKET}/models/challenger/scaler_btc.gz`
+  - Salva scaler_return em: `s3://{S3_MODELS_BUCKET}/models/challenger/scaler_btc_return.gz`
+  - Salva metadata em: `s3://{S3_MODELS_BUCKET}/models/challenger/model_metadata_btc.json`
+  - Salva holdout para avaliação em: `s3://{S3_MODELS_BUCKET}/models/challenger/holdout.joblib`
    - **Também** registra em MLflow (não é substituído)
 
 2. **API Startup (`lifespan.py`):**
-   - Tenta carregar de S3
-   - Se falhar (S3 indisponível), usa fallback local (`models/`)
+  - Tenta carregar primeiro de `models/champion/`
+  - Se não encontrar champion, usa fallback temporário em `models/challenger/`
+  - Se S3 estiver indisponível, usa fallback local (`models/`)
 
 ### Sem S3 (Fallback Local)
 
@@ -120,10 +122,17 @@ Se `S3_MODELS_BUCKET` está vazio ou indefinido:
 ```
 tech-challenge-5-dev-artifacts-db6c23fb/
 ├── models/
-│   ├── lstm_btc_hourly.keras           # Modelo Keras
-│   ├── scaler_btc.gz                   # Scaler features
-│   ├── scaler_btc_return.gz            # Scaler target
-│   └── model_metadata_btc.json         # Metadata
+│   ├── champion/
+│   │   ├── lstm_btc_hourly.keras       # Modelo ativo em produção
+│   │   ├── scaler_btc.gz
+│   │   ├── scaler_btc_return.gz
+│   │   └── model_metadata_btc.json
+│   └── challenger/
+│       ├── lstm_btc_hourly.keras       # Novo modelo treinado
+│       ├── scaler_btc.gz
+│       ├── scaler_btc_return.gz
+│       ├── model_metadata_btc.json
+│       └── holdout.joblib              # Holdout para gate champion-challenger
 ├── [versões anteriores podem ficar aqui via DVC ou manual cleanup]
 ```
 
@@ -142,7 +151,10 @@ Para produção (ECS task role), adicione policy:
         "s3:PutObject",
         "s3:DeleteObject"
       ],
-      "Resource": "arn:aws:s3:::tech-challenge-5-dev-artifacts-db6c23fb/models/*"
+      "Resource": [
+        "arn:aws:s3:::tech-challenge-5-dev-artifacts-db6c23fb/models/champion/*",
+        "arn:aws:s3:::tech-challenge-5-dev-artifacts-db6c23fb/models/challenger/*"
+      ]
     }
   ]
 }

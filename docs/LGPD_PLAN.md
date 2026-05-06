@@ -10,9 +10,9 @@ O sistema não foi desenhado para coletar PII como dado de negócio principal. M
 
 ## Componentes Relevantes
 
-- [src/security/guardrails.py](src/security/guardrails.py)
-- [src/app.py](src/app.py)
-- [tests/test_guardrails.py](tests/test_guardrails.py)
+- [src/security/guardrails.py](../src/security/guardrails.py)
+- [src/delivery/api/routers/chat.py](../src/delivery/api/routers/chat.py)
+- [tests/test_guardrails.py](../tests/test_guardrails.py)
 
 ## Como o Presidio Protege PII
 
@@ -48,7 +48,7 @@ Marcadores usados no output:
 
 ## Onde a Sanitização é Aplicada
 
-No endpoint `/chat` em [src/app.py](src/app.py):
+No endpoint `/chat` em [src/delivery/api/routers/chat.py](../src/delivery/api/routers/chat.py):
 
 - observações intermediárias das ferramentas são sanitizadas
 - resposta final do agente é sanitizada antes de retornar ao cliente
@@ -57,7 +57,7 @@ Isso reduz risco de vazamento acidental de PII tanto no raciocínio intermediár
 
 ## Evidências de Teste
 
-Os testes em [tests/test_guardrails.py](tests/test_guardrails.py) cobrem:
+Os testes em [tests/test_guardrails.py](../tests/test_guardrails.py) cobrem:
 
 - bloqueio de prompt injection
 - bloqueio de context stuffing

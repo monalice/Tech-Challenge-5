@@ -28,7 +28,7 @@ Resultado esperado:
 
 Evidência:
 
-- [tests/test_guardrails.py](tests/test_guardrails.py) cobre esse caso explicitamente
+- [tests/test_guardrails.py](../tests/test_guardrails.py) cobre esse caso explicitamente
 
 ## Cenário 2: Context Stuffing
 
@@ -46,7 +46,7 @@ Resultado esperado:
 
 Evidência:
 
-- [tests/test_guardrails.py](tests/test_guardrails.py) cobre o bloqueio acima do limite
+- [tests/test_guardrails.py](../tests/test_guardrails.py) cobre o bloqueio acima do limite
 
 ## Cenário 3: Vazamento de PII na Resposta
 
@@ -64,7 +64,7 @@ Resultado esperado:
 
 Evidência:
 
-- [tests/test_guardrails.py](tests/test_guardrails.py) valida mascaramento por Presidio e fallback regex
+- [tests/test_guardrails.py](../tests/test_guardrails.py) valida mascaramento por Presidio e fallback regex
 
 ## Cenário 4: Falha do Motor de Anonimização
 
@@ -82,7 +82,7 @@ Resultado esperado:
 
 Evidência:
 
-- [tests/test_guardrails.py](tests/test_guardrails.py) valida esse comportamento
+- [tests/test_guardrails.py](../tests/test_guardrails.py) valida esse comportamento
 
 ## Cenário 5: Contexto de Mercado Enganoso ou Insuficiente
 

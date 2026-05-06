@@ -17,9 +17,9 @@ Exemplos:
 
 Mitigação no código:
 
-- [src/security/guardrails.py](src/security/guardrails.py): `InputGuardrail` usa regex para padrões de prompt injection
-- [src/app.py](src/app.py): valida a mensagem antes de executar o agente
-- [tests/test_guardrails.py](tests/test_guardrails.py): cobre bloqueio explícito de prompt injection
+- [src/security/guardrails.py](../src/security/guardrails.py): `InputGuardrail` usa regex para padrões de prompt injection
+- [src/delivery/api/routers/chat.py](../src/delivery/api/routers/chat.py): valida a mensagem antes de executar o agente
+- [tests/test_guardrails.py](../tests/test_guardrails.py): cobre bloqueio explícito de prompt injection
 
 ## 2. Sensitive Information Disclosure
 
@@ -28,8 +28,8 @@ O agente ou as ferramentas podem retornar PII presente na entrada, em observaç�
 
 Mitigação no código:
 
-- [src/security/guardrails.py](src/security/guardrails.py): `OutputGuardrail` com Presidio + regex fallback
-- [src/app.py](src/app.py): sanitiza observações intermediárias e resposta final
+- [src/security/guardrails.py](../src/security/guardrails.py): `OutputGuardrail` com Presidio + regex fallback
+- [src/delivery/api/routers/chat.py](../src/delivery/api/routers/chat.py): sanitiza observações intermediárias e resposta final
 - mascaramento de email, CPF, CNPJ, telefone e cartão
 
 ## 3. Training Data / Retrieval Data Poisoning
@@ -39,8 +39,8 @@ Documentos de recuperação ou contexto externo podem introduzir informação en
 
 Mitigação parcial no código:
 
-- [src/agent/rag_pipeline.py](src/agent/rag_pipeline.py): corpus local e simulado, reduzindo dependência de fontes arbitrárias em runtime
-- [src/agent/react_agent.py](src/agent/react_agent.py): `CryptoKnowledgeRAG` usa vector store local controlado pelo projeto
+- [src/agent/rag_pipeline.py](../src/agent/rag_pipeline.py): corpus local e simulado, reduzindo dependência de fontes arbitrárias em runtime
+- [src/agent/react_agent.py](../src/agent/react_agent.py): `CryptoKnowledgeRAG` usa vector store local controlado pelo projeto
 
 Lacuna:
 
@@ -53,9 +53,9 @@ Entradas grandes podem degradar performance, custo e estabilidade do agente.
 
 Mitigação no código:
 
-- [src/security/guardrails.py](src/security/guardrails.py): limite de 4096 caracteres por input
-- [tests/test_guardrails.py](tests/test_guardrails.py): valida bloqueio por excesso de tamanho
-- [src/app.py](src/app.py): rejeita a entrada antes da execução do agente
+- [src/security/guardrails.py](../src/security/guardrails.py): limite de 4096 caracteres por input
+- [tests/test_guardrails.py](../tests/test_guardrails.py): valida bloqueio por excesso de tamanho
+- [src/delivery/api/routers/chat.py](../src/delivery/api/routers/chat.py): rejeita a entrada antes da execução do agente
 
 ## 5. Excessive Agency / Unsafe Tool Use
 
@@ -64,7 +64,7 @@ O agente pode usar ferramentas de forma inadequada, confiar demais em contexto f
 
 Mitigação parcial no código:
 
-- [src/agent/react_agent.py](src/agent/react_agent.py): conjunto pequeno e específico de ferramentas
+- [src/agent/react_agent.py](../src/agent/react_agent.py): conjunto pequeno e específico de ferramentas
 - ferramentas limitadas a previsão, cotação e RAG local
 - temperatura `0` no LLM para maior determinismo operacional
 - resposta final pode ser auditada com passos intermediários no `/chat`
@@ -80,9 +80,9 @@ Dependências de provedores externos e bibliotecas podem falhar ou alterar compo
 
 Mitigação parcial no código:
 
-- [requirements.txt](requirements.txt): versões pinadas ou faixas controladas em partes críticas
-- [src/app.py](src/app.py): fallback de mercado entre Yahoo Finance e Binance
-- [infra/terraform/main.tf](infra/terraform/main.tf): segredos armazenados em Secrets Manager
+- [requirements.txt](../requirements.txt): versões pinadas ou faixas controladas em partes críticas
+- [src/infrastructure/market_data.py](../src/infrastructure/market_data.py): fallback de mercado entre Yahoo Finance e Binance
+- [infra/terraform/main.tf](../infra/terraform/main.tf): segredos armazenados em Secrets Manager
 
 ## 7. Secrets Management e Exposição Acidental em Commit
 
@@ -91,9 +91,10 @@ Segredos reais podem ser expostos por commit acidental em `.env`, logs de execu�
 
 Mitigação no código e no processo:
 
-- [src/app.py](src/app.py): fail-fast de startup em produção para `GOOGLE_API_KEY` ausente, placeholder ou formato inválido
-- [.pre-commit-config.yaml](.pre-commit-config.yaml): hooks de detecção (`detect-private-key`, `detect-secrets`) e checklist local de segurança
-- [scripts/pre_commit_security_check.py](scripts/pre_commit_security_check.py): bloqueia commit de `.env`, logs, `mlruns/` e artefatos binários em `models/`, além de varredura por padrões de segredo
+- [src/agent/llm_config.py](../src/agent/llm_config.py): fail-fast de startup em produção para configuração Bedrock inválida (região e guardrails)
+- [src/delivery/api/lifespan.py](../src/delivery/api/lifespan.py): aplica validação de startup no ciclo de vida da API
+- [.pre-commit-config.yaml](../.pre-commit-config.yaml): hooks de detecção (`detect-private-key`, `detect-secrets`) e checklist local de segurança
+- [scripts/pre_commit_security_check.py](../scripts/pre_commit_security_check.py): bloqueia commit de `.env`, logs, `mlruns/` e artefatos binários em `models/`, além de varredura por padrões de segredo
 
 Lacuna residual:
 
